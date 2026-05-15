@@ -1,9 +1,6 @@
-use clap::Parser;
+use std::path::Path;
 
-use super::{Config, default_path};
-use crate::cli::Cli;
-use crate::settings::Settings;
-use crate::theme::Theme;
+use super::{Config, Layout, config_dir, default_config_path, layout::LayoutEntry};
 
 const MINIMAL: &str = r#"
 [base]
@@ -16,57 +13,160 @@ center = []
 right = []
 "#;
 
+const EXAMPLE_CONFIG: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../examples/config.toml"
+));
+
+fn parse(raw: &str) -> Config {
+    toml::from_str(raw).expect("config should parse")
+}
+
 #[test]
 fn deserialize_minimal_ok() {
-    let cfg: Config = toml::from_str(MINIMAL).unwrap();
-    let b = cfg.base.unwrap_or_default();
-    assert_eq!(b.font.as_deref(), Some("Sans"));
-    assert_eq!(b.theme.as_deref(), Some("theme.toml"));
+    let cfg = parse(MINIMAL);
+    assert_eq!(
+        cfg.base.as_ref().and_then(|b| b.font.as_deref()),
+        Some("Sans")
+    );
+    assert_eq!(
+        cfg.base.as_ref().and_then(|b| b.theme.as_deref()),
+        Some("theme.toml")
+    );
+    assert_eq!(
+        cfg.layout
+            .as_ref()
+            .and_then(|l| l.left.as_ref())
+            .map(Vec::len),
+        Some(0)
+    );
 }
 
 #[test]
-fn no_base_section_uses_default_font() {
-    let raw = r#"
-[layout]
-left = []
-center = []
-right = []
-"#;
-    let cfg: Config = toml::from_str(raw).unwrap();
-    let cli = Cli::try_parse_from(["abar"]).unwrap();
-    let resolved = Settings::resolve(&cli, cfg, Theme::default()).unwrap();
-    assert_eq!(resolved.font, "NotoSans Nerd Font");
+fn example_config_toml_deserializes() {
+    let cfg = parse(EXAMPLE_CONFIG);
+    assert_eq!(
+        cfg.base.as_ref().and_then(|b| b.font.as_deref()),
+        Some("NotoSans Nerd Font")
+    );
+    assert_eq!(
+        cfg.modules
+            .as_ref()
+            .and_then(|m| m.custom.as_ref())
+            .map(|c| c.len()),
+        Some(5)
+    );
+    assert!(
+        cfg.modules
+            .as_ref()
+            .and_then(|m| m.custom_by_name("system_info"))
+            .is_some()
+    );
+    assert_eq!(
+        cfg.keyboard
+            .as_ref()
+            .and_then(|k| k.layouts.as_ref())
+            .map(|v| v.as_slice()),
+        Some(["en-US".to_string(), "ru-RU".to_string()].as_slice())
+    );
+    assert_eq!(
+        cfg.clock
+            .as_ref()
+            .and_then(|c| c.formats.as_ref())
+            .and_then(|f| f.first().map(String::as_str)),
+        Some("%R %Z %d.%m.%Y")
+    );
 }
 
 #[test]
-fn deserialize_allows_extra_top_level_tables() {
-    let s = r#"
-[base]
-font = "Sans"
-theme = "theme.toml"
-
-[layout]
-left = []
-center = []
-right = []
-
-[custom_modules]
-x = { icon = "x" }
-"#;
-    let cfg: Config = toml::from_str(s).unwrap();
-    assert_eq!(cfg.base.unwrap_or_default().font.as_deref(), Some("Sans"));
+fn nested_layout_groups_parse() {
+    let cfg = parse(EXAMPLE_CONFIG);
+    let layout = cfg.layout.as_ref().unwrap();
+    assert_eq!(
+        layout.left.as_ref().unwrap(),
+        &[
+            LayoutEntry::Module("system_info".into()),
+            LayoutEntry::Module("workspaces".into()),
+        ]
+    );
+    assert_eq!(
+        layout.center.as_ref().unwrap(),
+        &[LayoutEntry::Module("window".into())]
+    );
+    let right = layout.right.as_ref().unwrap();
+    assert_eq!(right.len(), 2);
+    match &right[0] {
+        LayoutEntry::Group(g) => assert_eq!(g, &["keyboard"]),
+        other => panic!("expected group, got {other:?}"),
+    }
+    match &right[1] {
+        LayoutEntry::Group(g) => assert_eq!(
+            g,
+            &["tray", "clock", "bluetooth", "network", "audio", "wleave"]
+        ),
+        other => panic!("expected group, got {other:?}"),
+    }
 }
 
 #[test]
-fn load_missing_file_yields_default_struct() {
-    let cfg = Config::load(std::path::Path::new("/nonexistent/abar/config.toml"));
-    let cli = Cli::try_parse_from(["abar"]).unwrap();
-    let s = Settings::resolve(&cli, cfg, Theme::default()).unwrap();
-    assert_eq!(s.font, "NotoSans Nerd Font");
+fn custom_module_events_parse() {
+    let cfg = parse(EXAMPLE_CONFIG);
+    let audio = cfg
+        .modules
+        .as_ref()
+        .and_then(|m| m.custom_by_name("audio"))
+        .unwrap();
+    assert_eq!(audio.icon, "audio");
+    let events = audio.events.as_ref().unwrap();
+    assert_eq!(events.on_left_click.as_deref(), Some("pavucontrol"));
+    assert_eq!(events.on_scroll_up.as_deref(), Some("pavucontrol -t 3"));
 }
 
 #[test]
-fn default_path_ends_with_abar_config() {
-    let p = default_path();
-    assert!(p.ends_with("abar/config.toml"));
+fn clock_module_events_parse() {
+    let cfg = parse(EXAMPLE_CONFIG);
+    let clock = cfg.clock.as_ref().unwrap();
+    let events = clock.events.as_ref().unwrap();
+    assert_eq!(events.on_left_click.as_deref(), Some("rusti-cal"));
+    assert_eq!(
+        clock.timezones.as_deref(),
+        Some(["Asia/Tokyo".to_string(), "Europe/Moscow".to_string()].as_slice(),)
+    );
+}
+
+#[test]
+fn default_config_has_base_and_layout() {
+    let cfg = Config::default();
+    let base = cfg.base.unwrap();
+    assert_eq!(base.font.as_deref(), Some("NotoSans Nerd Font"));
+    assert_eq!(base.theme.as_deref(), Some("theme.toml"));
+    let layout = cfg.layout.unwrap();
+    assert!(layout.left.is_none() && layout.center.is_none() && layout.right.is_none());
+}
+
+#[test]
+fn config_dir_ends_with_abar() {
+    assert!(config_dir().ends_with("abar"));
+}
+
+#[test]
+fn default_config_path_ends_with_config_toml() {
+    assert!(default_config_path().ends_with("abar/config.toml"));
+}
+
+#[test]
+fn layout_module_names_in_order() {
+    let layout = Layout {
+        left: Some(vec![LayoutEntry::Module("a".into())]),
+        center: Some(vec![LayoutEntry::Group(vec!["b".into(), "c".into()])]),
+        right: Some(vec![LayoutEntry::Module("d".into())]),
+    };
+    assert_eq!(layout.module_names_in_order(), vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn load_missing_file_returns_defaults() {
+    let cfg = Config::load(Path::new("/nonexistent/abar/config.toml"));
+    let base = cfg.base.unwrap();
+    assert_eq!(base.font.as_deref(), Some("NotoSans Nerd Font"));
 }

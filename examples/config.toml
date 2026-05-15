@@ -27,12 +27,14 @@ theme = "theme.toml"
 # Create custom modules, by defining a new entries below.
 # Each entry requires a unique name and an icon (FreeDesktop.org icon name).
 # If icon is not specified or not found the panic is expected.
-[custom_modules]
-system_info = { icon = "system-info", on_left_click = "btm" }
-wleave = { icon = "door", on_left_click = "wleave" }
-audio = { icon = "audio", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" }
-bluetooth = { icon = "bluetooth", on_left_click = "blueman-manager" }
-network = { icon = "network", on_left_click = "nm-connection-editor" }
+[modules]
+custom = [
+    { name = "system_info", icon = "system-info", on_left_click = "btm" },
+    { name = "wleave", icon = "door", on_left_click = "wleave" },
+    { name = "audio", icon = "audio", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
+    { name = "bluetooth", icon = "bluetooth", on_left_click = "blueman-manager" },
+    { name = "network", icon = "network", on_left_click = "nm-connection-editor" },
+]
 
 # Layout:
 # Layout is a list of modules, each module is a string.
