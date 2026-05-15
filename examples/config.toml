@@ -1,6 +1,7 @@
 [base]
-# Specifying font is a requirement to run abar, it will panic if not specified.
-font = "NotoSans Nerd Font"
+# font_name is required to run abar.
+font_name = "NotoSans Nerd Font"
+font_size = 16
 # themes are looked-up at ~/.config/abar/themes, e.g. theme.toml in this directory
 theme = "theme.toml"
 

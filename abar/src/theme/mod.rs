@@ -1,5 +1,3 @@
-//! Theme schema (`theme.toml`). Fields are consumed in later phases.
-
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};

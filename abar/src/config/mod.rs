@@ -1,5 +1,3 @@
-//! Config schema (`config.toml`). Fields are consumed in later phases.
-
 #![allow(dead_code)]
 
 mod events;
@@ -30,14 +28,16 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Base {
-    pub font: Option<String>,
+    pub font_name: Option<String>,
+    pub font_size: Option<f64>,
     pub theme: Option<String>,
 }
 
 impl Default for Base {
     fn default() -> Self {
         Self {
-            font: Some("NotoSans Nerd Font".to_string()),
+            font_name: Some("NotoSans Nerd Font".to_string()),
+            font_size: Some(14.0),
             theme: Some("theme.toml".to_string()),
         }
     }

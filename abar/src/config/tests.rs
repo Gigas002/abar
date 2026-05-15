@@ -4,7 +4,8 @@ use super::{Config, Layout, config_dir, default_config_path, layout::LayoutEntry
 
 const MINIMAL: &str = r#"
 [base]
-font = "Sans"
+font_name = "Sans"
+font_size = 12
 theme = "theme.toml"
 
 [layout]
@@ -26,9 +27,10 @@ fn parse(raw: &str) -> Config {
 fn deserialize_minimal_ok() {
     let cfg = parse(MINIMAL);
     assert_eq!(
-        cfg.base.as_ref().and_then(|b| b.font.as_deref()),
+        cfg.base.as_ref().and_then(|b| b.font_name.as_deref()),
         Some("Sans")
     );
+    assert_eq!(cfg.base.as_ref().and_then(|b| b.font_size), Some(12.0));
     assert_eq!(
         cfg.base.as_ref().and_then(|b| b.theme.as_deref()),
         Some("theme.toml")
@@ -46,9 +48,10 @@ fn deserialize_minimal_ok() {
 fn example_config_toml_deserializes() {
     let cfg = parse(EXAMPLE_CONFIG);
     assert_eq!(
-        cfg.base.as_ref().and_then(|b| b.font.as_deref()),
+        cfg.base.as_ref().and_then(|b| b.font_name.as_deref()),
         Some("NotoSans Nerd Font")
     );
+    assert_eq!(cfg.base.as_ref().and_then(|b| b.font_size), Some(16.0));
     assert_eq!(
         cfg.modules
             .as_ref()
@@ -138,7 +141,8 @@ fn clock_module_events_parse() {
 fn default_config_has_base_and_layout() {
     let cfg = Config::default();
     let base = cfg.base.unwrap();
-    assert_eq!(base.font.as_deref(), Some("NotoSans Nerd Font"));
+    assert_eq!(base.font_name.as_deref(), Some("NotoSans Nerd Font"));
+    assert_eq!(base.font_size, Some(14.0));
     assert_eq!(base.theme.as_deref(), Some("theme.toml"));
     let layout = cfg.layout.unwrap();
     assert!(layout.left.is_none() && layout.center.is_none() && layout.right.is_none());
@@ -155,6 +159,35 @@ fn default_config_path_ends_with_config_toml() {
 }
 
 #[test]
+fn to_bar_layout_uses_builtin_segment_labels() {
+    let layout = Layout {
+        left: Some(vec![LayoutEntry::Module("keyboard".into())]),
+        center: Some(vec![LayoutEntry::Module("workspaces".into())]),
+        right: Some(vec![LayoutEntry::Module("clock".into())]),
+    };
+    let bar = layout.to_bar_layout();
+    assert_eq!(bar.left[0].segments[0].label, "kb");
+    assert_eq!(bar.center[0].segments[0].label, "ws");
+    assert_eq!(bar.right[0].segments[0].label, "clock");
+}
+
+#[test]
+fn to_bar_layout_nested_group_is_one_island() {
+    let layout = Layout {
+        right: Some(vec![LayoutEntry::Group(vec![
+            "tray".into(),
+            "clock".into(),
+        ])]),
+        ..Layout::default()
+    };
+    let bar = layout.to_bar_layout();
+    assert_eq!(bar.right.len(), 1);
+    assert_eq!(bar.right[0].segments.len(), 2);
+    assert_eq!(bar.right[0].segments[0].label, "tray");
+    assert_eq!(bar.right[0].segments[1].label, "clock");
+}
+
+#[test]
 fn layout_module_names_in_order() {
     let layout = Layout {
         left: Some(vec![LayoutEntry::Module("a".into())]),
@@ -168,5 +201,6 @@ fn layout_module_names_in_order() {
 fn load_missing_file_returns_defaults() {
     let cfg = Config::load(Path::new("/nonexistent/abar/config.toml"));
     let base = cfg.base.unwrap();
-    assert_eq!(base.font.as_deref(), Some("NotoSans Nerd Font"));
+    assert_eq!(base.font_name.as_deref(), Some("NotoSans Nerd Font"));
+    assert_eq!(base.font_size, Some(14.0));
 }

@@ -1,6 +1,6 @@
-# Phase 0 minimal bar: `[base]` + empty `[layout]` only (see docs/PLAN.md).
 [base]
-font = "NotoSans Nerd Font"
+font_name = "NotoSans Nerd Font"
+font_size = 14
 theme = "theme.toml"
 
 [layout]

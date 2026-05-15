@@ -1,4 +1,5 @@
 use libabar::color::parse_hex_rgba_to_bgra;
+use libabar::{BarColors, BarSpec, BarStyle};
 
 use crate::cli::Cli;
 use crate::config::{Base as ConfigBase, Config};
@@ -6,11 +7,8 @@ use crate::error::Error;
 use crate::theme::{Base as ThemeBase, Theme};
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct Settings {
-    pub font: String,
-    pub background_color: [u8; 4],
-    pub foreground_color: [u8; 4],
+    pub bar: BarSpec,
 }
 
 impl Settings {
@@ -24,15 +22,43 @@ impl Settings {
         let foreground = theme_base
             .foreground_color
             .unwrap_or_else(|| ThemeBase::default().foreground_color.unwrap());
-        let font = config_base
-            .font
-            .unwrap_or_else(|| ConfigBase::default().font.unwrap());
+        let font_name = config_base
+            .font_name
+            .unwrap_or_else(|| ConfigBase::default().font_name.unwrap());
+        let font_size = config_base
+            .font_size
+            .unwrap_or_else(|| ConfigBase::default().font_size.unwrap());
+
+        let layout = config
+            .layout
+            .as_ref()
+            .map(|l| l.to_bar_layout())
+            .unwrap_or_default();
 
         Ok(Self {
-            font,
-            background_color: parse_hex_rgba_to_bgra(&background)?,
-            foreground_color: parse_hex_rgba_to_bgra(&foreground)?,
+            bar: BarSpec::new(
+                BarColors {
+                    background: parse_hex_rgba_to_bgra(&background)?,
+                    foreground: parse_hex_rgba_to_bgra(&foreground)?,
+                },
+                BarStyle {
+                    font_name,
+                    font_size,
+                    ..BarStyle::default()
+                },
+                layout,
+            ),
         })
+    }
+}
+
+impl Settings {
+    pub fn font_name(&self) -> &str {
+        &self.bar.style.font_name
+    }
+
+    pub fn font_size(&self) -> f64 {
+        self.bar.style.font_size
     }
 }
 
