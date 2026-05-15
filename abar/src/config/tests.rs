@@ -121,7 +121,7 @@ fn custom_module_events_parse() {
         .as_ref()
         .and_then(|m| m.custom_by_name("audio"))
         .unwrap();
-    assert_eq!(audio.icon, "audio");
+    assert_eq!(audio.icon, "pavucontrol");
     let events = audio.events.as_ref().unwrap();
     assert_eq!(events.on_left_click.as_deref(), Some("pavucontrol"));
     assert_eq!(events.on_scroll_up.as_deref(), Some("pavucontrol -t 3"));
@@ -167,7 +167,7 @@ fn to_bar_layout_uses_builtin_segment_labels() {
         center: Some(vec![LayoutEntry::Module("workspaces".into())]),
         right: Some(vec![LayoutEntry::Module("clock".into())]),
     };
-    let bar = layout.to_bar_layout();
+    let bar = layout.to_bar_layout(None);
     assert_eq!(bar.left[0].segments[0].label, "kb");
     assert_eq!(bar.center[0].segments[0].label, "ws");
     assert_eq!(bar.right[0].segments[0].label, "clock");
@@ -182,7 +182,7 @@ fn to_bar_layout_nested_group_is_one_island() {
         ])]),
         ..Layout::default()
     };
-    let bar = layout.to_bar_layout();
+    let bar = layout.to_bar_layout(None);
     assert_eq!(bar.right.len(), 1);
     assert_eq!(bar.right[0].segments.len(), 2);
     assert_eq!(bar.right[0].segments[0].module_id, "tray");

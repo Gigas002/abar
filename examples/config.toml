@@ -7,7 +7,7 @@ theme = "theme.toml"
 
 # Modules:
 # All modules are an opt-in cargo compile-time features.
-# Built-in modules can have pre-defined settings, which can be tweaked in the config. 
+# Built-in modules can have pre-defined settings, which can be tweaked in the config.
 # Build-in modules list includes:
 # - workspaces: depends on 3rd party implementation, e.g. hyprland-rs, niri-ipc, etc
 # - window: same as above
@@ -15,7 +15,7 @@ theme = "theme.toml"
 # - keyboard
 # - tray
 # - clock
-# 
+#
 # All modules include following events:
 # - on_left_click
 # - on_right_click
@@ -30,11 +30,11 @@ theme = "theme.toml"
 # If icon is not specified or not found the panic is expected.
 [modules]
 custom = [
-    { name = "system_info", icon = "system-info", on_left_click = "btm" },
-    { name = "wleave", icon = "door", on_left_click = "wleave" },
-    { name = "audio", icon = "audio", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
-    { name = "bluetooth", icon = "bluetooth", on_left_click = "blueman-manager" },
-    { name = "network", icon = "network", on_left_click = "nm-connection-editor" },
+    { name = "system_info", icon = "gnome-system-monitor", on_left_click = "btm" },
+    { name = "wleave", icon = "system-log-out", on_left_click = "wleave" },
+    { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
+    { name = "bluetooth", icon = "blueman", on_left_click = "blueman-manager" },
+    { name = "network", icon = "preferences-system-network", on_left_click = "nm-connection-editor" },
 ]
 
 # Layout:

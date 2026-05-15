@@ -14,6 +14,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 };
 
 use crate::error::AbarError;
+use crate::icon::IconCache;
 use crate::input::{self, PointerAction};
 use crate::layout::ComputedBar;
 use crate::model::BarSpec;
@@ -50,6 +51,7 @@ pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
         bar_height: 1,
         computed: None,
         pointer: PointerState::default(),
+        icon_cache: IconCache::new(),
     };
 
     while state.running {
@@ -85,6 +87,7 @@ struct AppState {
     bar_height: u32,
     computed: Option<ComputedBar>,
     pointer: PointerState,
+    icon_cache: IconCache,
 }
 
 impl AppState {
@@ -178,7 +181,7 @@ impl AppState {
         width: u32,
         height: u32,
     ) -> Result<(), AbarError> {
-        let painted = paint_bar(&self.spec, width)?;
+        let painted = paint_bar(&self.spec, width, &mut self.icon_cache)?;
         self.bar_height = painted.frame.height;
         self.computed = Some(painted.computed);
 

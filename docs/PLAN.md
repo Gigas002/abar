@@ -269,12 +269,12 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 **Prerequisite for custom modules:** config already requires `icon` per `[modules].custom` entry, but the bar only draws placeholder **text** until this phase. Pointer events (Phase 3) can target custom segments by name; users still need **icons** to recognize them.
 
-- [ ] **`libabar/src/icon/`**: resolve **freedesktop-icon-name** via XDG icon theme (`hicolor`, user themes, `XDG_DATA_DIRS`); load **PNG** into a Cairo image source; cache decoded pixmaps per name/size where useful.
-- [ ] Optional Cargo feature **`svg`** + `resvg` for SVG assets (later polish; PNG-only is acceptable for first icon milestone).
-- [ ] Extend **`Segment`** / layout / paint: carry `icon_name` (and display mode — **icon-only** for custom modules, text and/or icon for built-ins later); measure segment size from icon dimensions (scale with `[base].font_size`, e.g. 1× em box).
-- [ ] **`abar` `Settings`**: wire each layout custom module to its config `icon`; **fail startup** with a clear error if the icon cannot be resolved (per `examples/config.toml` comment).
-- [ ] Paint icons centered in segment rects; reuse the same decode/blit helpers for **tray** item pixmaps in Phase 7.
-- [ ] Respect `XDG_ICON_THEME` / common theme name when present (document behavior).
+- [x] **`libabar/src/icon/`**: resolve **freedesktop-icon-name** via XDG icon theme (`hicolor`, user themes, `XDG_DATA_DIRS`); load **PNG** into a Cairo image source; cache decoded pixmaps per name/size where useful.
+- [x] Optional Cargo feature **`svg`** + `resvg` for SVG assets (later polish; PNG-only is acceptable for first icon milestone).
+- [x] Extend **`Segment`** / layout / paint: carry `icon_name` (and display mode — **icon-only** for custom modules, text and/or icon for built-ins later); measure segment size from icon dimensions (scale with `[base].font_size`, e.g. 1× em box).
+- [x] **`abar` `Settings`**: wire each layout custom module to its config `icon`; **fail startup** with a clear error if the icon cannot be resolved (per `examples/config.toml` comment).
+- [x] Paint icons centered in segment rects; reuse the same decode/blit helpers for **tray** item pixmaps in Phase 7.
+- [x] Respect `XDG_ICON_THEME` / common theme name when present (document behavior).
 
 **Verify**: unit tests with a **fixture icon theme** directory (resolve name → file, load PNG); headless render test (non-transparent pixels in icon bbox); manual run with `examples/config.toml` — `system_info`, `audio`, `network`, etc. show as icons, not strings.
 

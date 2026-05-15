@@ -1,5 +1,7 @@
-use libabar::{BarLayout, Island, Segment};
+use libabar::{BarLayout, DisplayMode, Island, Segment};
 use serde::Deserialize;
+
+use super::modules::Modules;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -42,33 +44,47 @@ impl Layout {
         names
     }
 
-    pub fn to_bar_layout(&self) -> BarLayout {
+    pub fn to_bar_layout(&self, modules: Option<&Modules>) -> BarLayout {
         BarLayout {
-            left: entries_to_islands(self.left.as_deref()),
-            center: entries_to_islands(self.center.as_deref()),
-            right: entries_to_islands(self.right.as_deref()),
+            left: entries_to_islands(self.left.as_deref(), modules),
+            center: entries_to_islands(self.center.as_deref(), modules),
+            right: entries_to_islands(self.right.as_deref(), modules),
         }
     }
 }
 
-fn entries_to_islands(entries: Option<&[LayoutEntry]>) -> Vec<Island> {
+fn entries_to_islands(entries: Option<&[LayoutEntry]>, modules: Option<&Modules>) -> Vec<Island> {
     let Some(entries) = entries else {
         return Vec::new();
     };
-    entries.iter().map(entry_to_island).collect()
+    entries
+        .iter()
+        .map(|e| entry_to_island(e, modules))
+        .collect()
 }
 
-fn entry_to_island(entry: &LayoutEntry) -> Island {
+fn entry_to_island(entry: &LayoutEntry, modules: Option<&Modules>) -> Island {
     Island {
         segments: entry
             .module_names()
             .iter()
-            .map(|name| Segment::new(name, segment_label(name)))
+            .map(|name| make_segment(name, modules))
             .collect(),
     }
 }
 
-fn segment_label(module: &str) -> String {
+fn make_segment(name: &str, modules: Option<&Modules>) -> Segment {
+    // Custom modules: icon-only display; events are wired by apply_module_events.
+    if let Some(custom) = modules.and_then(|m| m.custom_by_name(name)) {
+        return Segment::icon_only(name, &custom.icon);
+    }
+    // Built-in modules: text placeholder until their own phase adds live data.
+    let mut seg = Segment::new(name, builtin_label(name));
+    seg.display_mode = DisplayMode::TextOnly;
+    seg
+}
+
+fn builtin_label(module: &str) -> String {
     match module {
         "clock" => "clock".into(),
         "keyboard" => "kb".into(),

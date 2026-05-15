@@ -1,4 +1,4 @@
-use crate::model::{BarSpec, BarStyle, Island, Segment};
+use crate::model::{BarSpec, BarStyle, DisplayMode, Island, Segment};
 
 /// Measured island before placement on the bar.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +22,8 @@ pub struct PlacedIsland {
 pub struct PlacedSegment {
     pub module_id: String,
     pub label: String,
+    pub icon_name: Option<String>,
+    pub display_mode: DisplayMode,
     pub events: crate::model::SegmentEvents,
     pub x: f64,
     pub y: f64,
@@ -160,6 +162,8 @@ fn place_island(
             let placed = PlacedSegment {
                 module_id: segment.module_id.clone(),
                 label: segment.label.clone(),
+                icon_name: segment.icon_name.clone(),
+                display_mode: segment.display_mode,
                 events: segment.events.clone(),
                 x: seg_x,
                 y: seg_y,
@@ -232,7 +236,11 @@ fn measure_island(
     let mut segment_widths = Vec::with_capacity(island.segments.len());
 
     for seg in &island.segments {
-        let (w, h) = measure(&seg.label);
+        let (w, h) = match seg.display_mode {
+            DisplayMode::TextOnly => measure(&seg.label),
+            // Icon segments occupy a 1× em box (square).
+            DisplayMode::IconOnly => (style.font_size, style.font_size),
+        };
         max_h = max_h.max(h);
         segment_widths.push(w);
     }
