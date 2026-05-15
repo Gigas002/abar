@@ -1,7 +1,51 @@
-/// One text segment inside a grouped island.
+/// Optional shell commands for pointer actions on a module segment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SegmentEvents {
+    pub on_left_click: Option<String>,
+    pub on_right_click: Option<String>,
+    pub on_middle_click: Option<String>,
+    pub on_scroll_up: Option<String>,
+    pub on_scroll_down: Option<String>,
+}
+
+impl SegmentEvents {
+    pub fn on_left_click(&self) -> Option<&str> {
+        self.on_left_click.as_deref()
+    }
+
+    pub fn on_right_click(&self) -> Option<&str> {
+        self.on_right_click.as_deref()
+    }
+
+    pub fn on_middle_click(&self) -> Option<&str> {
+        self.on_middle_click.as_deref()
+    }
+
+    pub fn on_scroll_up(&self) -> Option<&str> {
+        self.on_scroll_up.as_deref()
+    }
+
+    pub fn on_scroll_down(&self) -> Option<&str> {
+        self.on_scroll_down.as_deref()
+    }
+}
+
+/// One module segment inside a grouped island.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
+    pub module_id: String,
     pub label: String,
+    pub events: SegmentEvents,
+}
+
+impl Segment {
+    pub fn new(module_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            module_id: module_id.into(),
+            label: label.into(),
+            events: SegmentEvents::default(),
+        }
+    }
 }
 
 /// Rounded background region with one or more segments (left to right).

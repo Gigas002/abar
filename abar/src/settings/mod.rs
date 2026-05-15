@@ -2,7 +2,7 @@ use libabar::color::parse_hex_rgba_to_bgra;
 use libabar::{BarColors, BarSpec, BarStyle};
 
 use crate::cli::Cli;
-use crate::config::{Base as ConfigBase, Config};
+use crate::config::{self, Base as ConfigBase, Config};
 use crate::error::Error;
 use crate::theme::{Base as ThemeBase, Theme};
 
@@ -13,6 +13,13 @@ pub struct Settings {
 
 impl Settings {
     pub fn resolve(_cli: &Cli, config: Config, theme: Theme) -> Result<Self, Error> {
+        let mut layout = config
+            .layout
+            .as_ref()
+            .map(|l| l.to_bar_layout())
+            .unwrap_or_default();
+        config::apply_module_events(&mut layout, &config);
+
         let theme_base = theme.base.unwrap_or_default();
         let config_base = config.base.unwrap_or_default();
 
@@ -28,12 +35,6 @@ impl Settings {
         let font_size = config_base
             .font_size
             .unwrap_or_else(|| ConfigBase::default().font_size.unwrap());
-
-        let layout = config
-            .layout
-            .as_ref()
-            .map(|l| l.to_bar_layout())
-            .unwrap_or_default();
 
         Ok(Self {
             bar: BarSpec::new(

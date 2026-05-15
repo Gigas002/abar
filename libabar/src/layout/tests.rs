@@ -15,6 +15,15 @@ fn center_row_is_horizontally_centered() {
         island_padding_y: 0.0,
         ..BarStyle::default()
     };
+    let left_island = Island {
+        segments: vec![Segment::new("l", "L")],
+    };
+    let center_island = Island {
+        segments: vec![Segment::new("c", "C")],
+    };
+    let right_island = Island {
+        segments: vec![Segment::new("r", "R")],
+    };
     let left = [IslandMetrics {
         width: 40.0,
         height: 20.0,
@@ -30,13 +39,23 @@ fn center_row_is_horizontally_centered() {
         height: 20.0,
         segment_widths: vec![40.0],
     }];
-    let labels = RegionLabels {
-        left: vec![vec!["L".into()]],
-        center: vec![vec!["C".into()]],
-        right: vec![vec!["R".into()]],
-    };
 
-    let bar = layout_regions(200, &style, &left, &center, &right, &labels);
+    let bar = layout_regions(
+        200,
+        &style,
+        RegionLayout {
+            islands: &[left_island],
+            metrics: &left,
+        },
+        RegionLayout {
+            islands: &[center_island],
+            metrics: &center,
+        },
+        RegionLayout {
+            islands: &[right_island],
+            metrics: &right,
+        },
+    );
     let center_island = bar
         .islands
         .iter()
@@ -53,10 +72,7 @@ fn center_row_is_horizontally_centered() {
 fn grouped_island_has_multiple_segments() {
     let style = BarStyle::default();
     let island = Island {
-        segments: vec![
-            Segment { label: "a".into() },
-            Segment { label: "bb".into() },
-        ],
+        segments: vec![Segment::new("a", "a"), Segment::new("b", "bb")],
     };
     let m = measure_island(&island, &style, &fixed_measure);
     assert_eq!(m.segment_widths.len(), 2);

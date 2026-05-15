@@ -17,11 +17,19 @@ pub struct Frame {
     pub data: Vec<u8>,
 }
 
+/// Frame buffer plus layout geometry for hit-testing pointer input.
+#[derive(Debug, Clone)]
+pub struct PaintOutput {
+    pub frame: Frame,
+    pub computed: ComputedBar,
+}
+
 /// Paint the full bar into a CPU buffer.
-pub fn paint_bar(spec: &BarSpec, bar_width: u32) -> Result<Frame, AbarError> {
+pub fn paint_bar(spec: &BarSpec, bar_width: u32) -> Result<PaintOutput, AbarError> {
     let font = FontContext::new(&spec.style.font_name, spec.style.font_size)?;
     let computed = crate::layout::compute_bar(spec, bar_width, &|text| font.measure(text));
-    paint_computed(spec, &computed, &font)
+    let frame = paint_computed(spec, &computed, &font)?;
+    Ok(PaintOutput { frame, computed })
 }
 
 pub fn paint_computed(

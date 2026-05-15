@@ -63,9 +63,7 @@ fn entry_to_island(entry: &LayoutEntry) -> Island {
         segments: entry
             .module_names()
             .iter()
-            .map(|name| Segment {
-                label: segment_label(name),
-            })
+            .map(|name| Segment::new(name, segment_label(name)))
             .collect(),
     }
 }

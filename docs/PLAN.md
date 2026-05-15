@@ -31,6 +31,7 @@ It mirrors the **execution discipline** of `wau/docs/WAU_RS_PLAN.md`:
 
 - **Library-first**: **`libabar`** — layout math, module trait/state, spawn helpers, Wayland protocol glue that is testable without config file formats; **`abar`** — `main` (tracing, CLI, read config/theme TOML, run loop).
 - **`abar` contains no domain logic** beyond wiring; **`libabar` does not depend on clap** or **toml** and does not assume a specific logger implementation beyond `tracing`.
+- **Tokio for async work**: use **[`tokio`](https://crates.io/crates/tokio)** as the standard runtime for background tasks — config event commands (`tokio::process`), later compositor IPC, tray D-Bus, and timers. The Wayland client loop stays **synchronous** on the main thread (`blocking_dispatch`); never block it on subprocess or socket I/O — offload with `tokio::spawn` (and `spawn_blocking` only when a sync API is unavoidable).
 - **Step sizing**: small PR-sized phases with explicit **Verify** blocks.
 - **Feature matrix in CI**: default, `--all-features`, `--no-default-features` (core must still build: e.g. bar shell + clock-only or stub modules — define explicitly in Phase 0). **Tray** is part of the first shippable bar; **MPRIS** is explicitly **not** in that milestone (see §8 post-first-release).
 - **Naming**: short, descriptive; prefer clarity over abstraction depth.
@@ -68,7 +69,8 @@ abar/                          # workspace root (already exists)
       lib.rs
       error.rs                 # thiserror (Wayland / SHM only; no config/theme)
       layout/                  # (future) resolve layout → ordered islands + alignment
-      render/                  # (future) cairo+pango: measure, draw islands, damage regions
+      icon/                    # freedesktop-icon-name lookup + PNG (optional SVG) → Cairo
+      render/                  # cairo+pango: measure, draw islands, damage regions
       wayland/                 # compositor connection, layer_shell, outputs, input
       modules/                 # (future) one subdirectory per built-in module
         clock/
@@ -78,7 +80,7 @@ abar/                          # workspace root (already exists)
           mod.rs
           tests.rs
         # ... workspaces, window, tray — compositor + tray behind features; MPRIS deferred (§8)
-      spawn/                   # (future) safe command execution, logging failures
+      spawn/                   # Tokio runtime + sh -c command execution (logging failures)
       model/                   # (future) shared small types (ids, colors, keys)
   abar/
     Cargo.toml                 # clap, toml, tracing-subscriber, libabar features passthrough
@@ -117,7 +119,7 @@ abar/                          # workspace root (already exists)
 - **`[base]`**: `font` (required), `theme` filename or path relative to themes dir.
 - **`[layout]`**: `left` / `center` / `right` lists; nested arrays = single island, inner order = left-to-right segments.
 - **Per-module tables** (e.g. `[keyboard]`, `[clock]`) for module-specific options; **global event tables** live on each module definition — custom modules under `[modules].custom` (array of `{ name, icon, on_* }`), for built-ins merge: defaults < `[clock]` etc.
-- **Events**: string commands executed via shell (`sh -c` or explicit documented runner); scroll/button names as in example.
+- **Events**: string commands executed via shell (`sh -c` through `tokio::process` on the shared runtime); scroll/button names as in example.
 
 **Invariants**
 
@@ -143,7 +145,7 @@ abar/                          # workspace root (already exists)
 
 - Build layout: for each island, compute **width/height** from max of children measurements + padding + corner radius.
 - Draw to **ARGB32** (or premultiplied, decide once and test on multiple compositors) image surface; upload to `wl_buffer`.
-- **Icons**: prefer **freedesktop-icon-name** resolution loading symbolic / fullcolor PNG/SVG (SVG via `resvg` is optional behind feature — start with **PNG only** or text fallback to reduce deps in v0).
+- **Icons**: **freedesktop-icon-name** resolution (XDG icon theme paths) → PNG into Cairo (**Phase 4**; required for **custom** modules to be visible). SVG via optional **`svg`** feature + `resvg` later. Built-ins may stay text-only until their module phase adds icons where needed.
 - **Text**: Pango layout with font description from `[base].font`; ellipsis rules for long window titles (module `window`).
 
 ### 4.2 Islands geometry
@@ -197,10 +199,10 @@ Each built-in module: **`libabar/src/modules/<name>/`** + **`tests.rs`**, gated 
 | `workspaces` | compositor feature (`hyprland` first)                | monitor filter per theme `visibility_mode`                |
 | `window`     | active title                                         | ellipsis, compositor feature                              |
 | `tray`       | **required** — StatusNotifier-style host, **`zbus`** | behavior reference: **ashell** (not UI stack); no libdbus |
-| `custom`     | icon + events                                        | always available via `[modules].custom` entries           |
+| `custom`     | icon + events                                        | **icon paint in Phase 4** — config `icon` parsed today but not shown until then |
 | `mpris`      | **post-first-release** (§8)                          | track/artist via **`zbus`** when implemented              |
 
-**Custom modules**: unique name, **icon name** required; missing icon → **startup error** (per examples).
+**Custom modules**: unique name, **icon name** required (FreeDesktop). Without **Phase 4** they appear as placeholder **text** (module name) and are not usable as designed. After Phase 4: missing icon at startup → **structured error** in `abar` (per `examples/config.toml`).
 
 ---
 
@@ -252,48 +254,61 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 - [x] Font loading, Pango measurement helpers, Cairo rounded-rect helper.
 - [x] Island layout pass: compute bar height from font metrics + padding; horizontal distribution for `left`/`center`/`right` (center cluster truly centered).
-- [x] Draw static placeholder text per module entry (“clock”, “kb”, …) before real data.
+- [x] Draw static placeholder **text** per module entry (“clock”, “kb”, …) before real module data.
 
 **Verify**: headless tests where possible (image buffer pixel samples); optional `insta` PNG snapshots gated behind feature.
 
 ### Phase 3 — Pointer input + spawn
 
-- [ ] Wayland pointer events → hit-test which island/segment.
-- [ ] Map to configured command; execute without blocking UI thread (use `std::thread` or small bounded worker; log failures).
+- [x] Wayland pointer events → hit-test which island/segment.
+- [x] Map to configured command; execute without blocking the Wayland thread via **Tokio** (`tokio::spawn` + `tokio::process::Command` with `sh -c`; log failures).
 
 **Verify**: integration test with mock command (script that touches tempfile).
 
-### Phase 4 — `clock` + `keyboard` modules
+### Phase 4 — FreeDesktop icons + **custom** modules (visible)
+
+**Prerequisite for custom modules:** config already requires `icon` per `[modules].custom` entry, but the bar only draws placeholder **text** until this phase. Pointer events (Phase 3) can target custom segments by name; users still need **icons** to recognize them.
+
+- [ ] **`libabar/src/icon/`**: resolve **freedesktop-icon-name** via XDG icon theme (`hicolor`, user themes, `XDG_DATA_DIRS`); load **PNG** into a Cairo image source; cache decoded pixmaps per name/size where useful.
+- [ ] Optional Cargo feature **`svg`** + `resvg` for SVG assets (later polish; PNG-only is acceptable for first icon milestone).
+- [ ] Extend **`Segment`** / layout / paint: carry `icon_name` (and display mode — **icon-only** for custom modules, text and/or icon for built-ins later); measure segment size from icon dimensions (scale with `[base].font_size`, e.g. 1× em box).
+- [ ] **`abar` `Settings`**: wire each layout custom module to its config `icon`; **fail startup** with a clear error if the icon cannot be resolved (per `examples/config.toml` comment).
+- [ ] Paint icons centered in segment rects; reuse the same decode/blit helpers for **tray** item pixmaps in Phase 7.
+- [ ] Respect `XDG_ICON_THEME` / common theme name when present (document behavior).
+
+**Verify**: unit tests with a **fixture icon theme** directory (resolve name → file, load PNG); headless render test (non-transparent pixels in icon bbox); manual run with `examples/config.toml` — `system_info`, `audio`, `network`, etc. show as icons, not strings.
+
+### Phase 5 — `clock` + `keyboard` modules
 
 - [ ] `clock`: formats + timezones rotation; tick each second/minute based on whether seconds in format; optional overrides.
 - [ ] `keyboard`: integrate **xkb** / compositor layout APIs as needed, or `locale1` / **Hyprland** — **pick simplest** for the near-term compositor target (§5.2).
 
 **Verify**: unit tests for format rotation logic (no Wayland).
 
-### Phase 5 — Compositor modules (`workspaces`, `window`)
+### Phase 6 — Compositor modules (`workspaces`, `window`)
 
-- [ ] Behind **`hyprland`** feature only for the near-term; IPC integrated with the main Wayland event loop (avoid starving the Wayland socket — non-blocking IPC or short-lived queries on a timer).
+- [ ] Behind **`hyprland`** feature only for the near-term; IPC integrated with the main Wayland event loop via **Tokio** (async sockets/streams or timed tasks on the runtime — avoid starving the Wayland socket).
 
 **Verify**: manual on Hyprland; mocked JSON/socket tests where feasible.
 
-### Phase 6 — **Tray** (must-have): `zbus` + StatusNotifier host
+### Phase 7 — **Tray** (must-have): `zbus` + StatusNotifier host
 
-- [ ] Implement tray host and item rendering (icons, attention state, **simple** menu exposure if required by spec — still drawn with Cairo/Pango or delegated only via user-spawned commands per product rules in §1.3; **no** iced menus).
+- [ ] Implement tray host and item rendering (**StatusNotifier pixmaps** via shared **icon** / image path from Phase 4, attention state, **simple** menu exposure if required by spec — still drawn with Cairo/Pango or delegated only via user-spawned commands per product rules in §1.3; **no** iced menus).
 - [ ] All D-Bus via **`zbus`**; gate in **`tray`** feature with **default-on** for the `abar` binary.
 - [ ] Use **ashell** source as a **semantic** reference for registration names, watcher protocol, and edge cases; do not copy iced-dependent UI.
 
 **Verify**: manual with real tray apps; unit tests for protocol parsing/state where possible; CI strategy for headless D-Bus documented if tests are skipped.
 
-### Phase 7 — Polish + first release
+### Phase 8 — Polish + first release
 
-- [ ] README: install deps (cairo, pango, wayland), feature flags matrix, example screenshots.
+- [ ] README: install deps (cairo, pango, wayland, icon theme), feature flags matrix, example screenshots.
 - [ ] CHANGELOG policy; tag v0.1.0 (first working draft / first milestone).
 
 **Verify**: full §7 gates + manual dogfood against `examples/*.toml`.
 
 ### Post-first-release — `mpris` (optional enhancement)
 
-- [ ] **After** Phase 7 ships: add **`mpris`** module behind **`mpris`** feature using **`zbus`** only (no libdbus); polling or signals with a conservative rate limit so the Wayland loop stays responsive.
+- [ ] **After** Phase 8 ships: add **`mpris`** module behind **`mpris`** feature using **`zbus`** only (no libdbus); polling or signals with a conservative rate limit so the Wayland loop stays responsive.
 - [ ] Not part of the first milestone’s definition of done (§9).
 
 **Verify**: dbus test harness or documented CI skip with local manual checklist.
@@ -303,7 +318,7 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 ## 9. Definition of done (v0 / first working draft)
 
 - [ ] Bar shows on Wayland with **islands** matching theme from `examples/theme.toml`.
-- [ ] Layout from `examples/config.toml` works for **clock**, **keyboard**, **`[modules].custom`**, **tray**, and **Hyprland**-backed **workspaces + window** (document any gaps vs ashell).
+- [ ] Layout from `examples/config.toml` works for **clock**, **keyboard**, **`[modules].custom`** (FreeDesktop **icons** visible — Phase 4), **tray**, and **Hyprland**-backed **workspaces + window** (document any gaps vs ashell).
 - [ ] **Tray** works with real StatusNotifier items via **`zbus`** (no libdbus).
 - [ ] **MPRIS** is **not** required for this milestone (planned in §8 post-first-release).
 - [ ] Pointer actions spawn user commands; built-in clock/keyboard behaviors work without GUIs.
@@ -317,6 +332,7 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 - **Edition**: `2024` (already in workspace package).
 - **Versions**: `x.y` or `x` in manifests; lockfile committed.
 - **Health**: avoid archived / unmaintained crates.
+- **Async runtime**: **`tokio`** (`rt-multi-thread`, `process`, `time`, …) in **`libabar`** — standard for parallel background work; keep the dependency lean (no full workspace stack unless a phase needs it).
 - **Heavy deps**: justify in PR (e.g. **`zbus`** for **tray** and later **MPRIS**); keep unused code paths behind features.
 
 ---
@@ -339,3 +355,5 @@ Update this plan when:
 | 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                          |
 | 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release |
 | 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                         |
+| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                 |
+| 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                      |

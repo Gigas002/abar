@@ -1,4 +1,4 @@
-use crate::model::{BarLayout, BarSpec, BarStyle, Island};
+use crate::model::{BarSpec, BarStyle, Island, Segment};
 
 /// Measured island before placement on the bar.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +20,9 @@ pub struct PlacedIsland {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedSegment {
+    pub module_id: String,
     pub label: String,
+    pub events: crate::model::SegmentEvents,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -34,23 +36,28 @@ pub struct ComputedBar {
     pub islands: Vec<PlacedIsland>,
 }
 
+/// One bar region's islands and their measured sizes.
+pub struct RegionLayout<'a> {
+    pub islands: &'a [Island],
+    pub metrics: &'a [IslandMetrics],
+}
+
 /// Lay out islands for a bar of `bar_width` pixels using pre-measured sizes.
 pub fn layout_regions(
     bar_width: u32,
     style: &BarStyle,
-    left: &[IslandMetrics],
-    center: &[IslandMetrics],
-    right: &[IslandMetrics],
-    labels: &RegionLabels,
+    left: RegionLayout<'_>,
+    center: RegionLayout<'_>,
+    right: RegionLayout<'_>,
 ) -> ComputedBar {
     let bar_width = f64::from(bar_width);
-    let inner_height = region_inner_height(left, center, right);
+    let inner_height = region_inner_height(left.metrics, center.metrics, right.metrics);
     let bar_height = inner_height + 2.0 * style.bar_padding_y;
 
     let mut islands = Vec::new();
 
-    let center_total = row_width(center, style.island_gap);
-    let right_total = row_width(right, style.island_gap);
+    let center_total = row_width(center.metrics, style.island_gap);
+    let right_total = row_width(right.metrics, style.island_gap);
 
     let x = style.bar_padding_x;
     place_row(
@@ -59,8 +66,8 @@ pub fn layout_regions(
         style,
         bar_height,
         inner_height,
-        left,
-        &labels.left,
+        left.islands,
+        left.metrics,
     );
 
     let center_x = ((bar_width - center_total) / 2.0).max(style.bar_padding_x);
@@ -70,8 +77,8 @@ pub fn layout_regions(
         style,
         bar_height,
         inner_height,
-        center,
-        &labels.center,
+        center.islands,
+        center.metrics,
     );
 
     let right_x = (bar_width - style.bar_padding_x - right_total).max(style.bar_padding_x);
@@ -81,8 +88,8 @@ pub fn layout_regions(
         style,
         bar_height,
         inner_height,
-        right,
-        &labels.right,
+        right.islands,
+        right.metrics,
     );
 
     ComputedBar {
@@ -90,26 +97,6 @@ pub fn layout_regions(
         height: bar_height.round() as u32,
         islands,
     }
-}
-
-/// Labels per region, aligned with measured island lists.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct RegionLabels {
-    pub left: Vec<Vec<String>>,
-    pub center: Vec<Vec<String>>,
-    pub right: Vec<Vec<String>>,
-}
-
-pub fn region_labels(layout: &BarLayout) -> RegionLabels {
-    RegionLabels {
-        left: layout.left.iter().map(island_labels).collect(),
-        center: layout.center.iter().map(island_labels).collect(),
-        right: layout.right.iter().map(island_labels).collect(),
-    }
-}
-
-fn island_labels(island: &Island) -> Vec<String> {
-    island.segments.iter().map(|s| s.label.clone()).collect()
 }
 
 fn region_inner_height(
@@ -138,12 +125,12 @@ fn place_row(
     style: &BarStyle,
     _bar_height: f64,
     inner_height: f64,
+    islands: &[Island],
     metrics: &[IslandMetrics],
-    label_groups: &[Vec<String>],
 ) {
-    for (metric, labels) in metrics.iter().zip(label_groups) {
+    for (island, metric) in islands.iter().zip(metrics) {
         let y = style.bar_padding_y + (inner_height - metric.height) / 2.0;
-        let placed = place_island(x, y, metric, style, labels);
+        let placed = place_island(x, y, metric, style, &island.segments);
         x += metric.width + style.island_gap;
         out.push(placed);
     }
@@ -154,7 +141,7 @@ fn place_island(
     y: f64,
     metric: &IslandMetrics,
     style: &BarStyle,
-    labels: &[String],
+    segments: &[Segment],
 ) -> PlacedIsland {
     let mut seg_x = x + style.island_padding_x;
     let inner_h = metric.height - 2.0 * style.island_padding_y;
@@ -166,19 +153,21 @@ fn place_island(
         metric.segment_widths.clone()
     };
 
-    let segments = labels
+    let placed_segments = segments
         .iter()
         .zip(widths.iter())
-        .map(|(label, &seg_w)| {
-            let seg = PlacedSegment {
-                label: label.clone(),
+        .map(|(segment, &seg_w)| {
+            let placed = PlacedSegment {
+                module_id: segment.module_id.clone(),
+                label: segment.label.clone(),
+                events: segment.events.clone(),
                 x: seg_x,
                 y: seg_y,
                 width: seg_w,
                 height: inner_h,
             };
             seg_x += seg_w + style.segment_gap;
-            seg
+            placed
         })
         .collect();
 
@@ -187,7 +176,7 @@ fn place_island(
         y,
         width: metric.width,
         height: metric.height,
-        segments,
+        segments: placed_segments,
     }
 }
 
@@ -197,27 +186,41 @@ pub fn compute_bar(
     bar_width: u32,
     measure: &impl Fn(&str) -> (f64, f64),
 ) -> ComputedBar {
-    let left = spec
+    let left_metrics = spec
         .layout
         .left
         .iter()
         .map(|i| measure_island(i, &spec.style, measure))
         .collect::<Vec<_>>();
-    let center = spec
+    let center_metrics = spec
         .layout
         .center
         .iter()
         .map(|i| measure_island(i, &spec.style, measure))
         .collect::<Vec<_>>();
-    let right = spec
+    let right_metrics = spec
         .layout
         .right
         .iter()
         .map(|i| measure_island(i, &spec.style, measure))
         .collect::<Vec<_>>();
 
-    let labels = region_labels(&spec.layout);
-    layout_regions(bar_width, &spec.style, &left, &center, &right, &labels)
+    layout_regions(
+        bar_width,
+        &spec.style,
+        RegionLayout {
+            islands: &spec.layout.left,
+            metrics: &left_metrics,
+        },
+        RegionLayout {
+            islands: &spec.layout.center,
+            metrics: &center_metrics,
+        },
+        RegionLayout {
+            islands: &spec.layout.right,
+            metrics: &right_metrics,
+        },
+    )
 }
 
 fn measure_island(

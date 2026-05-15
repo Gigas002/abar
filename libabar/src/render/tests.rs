@@ -1,6 +1,6 @@
 use crate::layout::compute_bar;
 use crate::model::{BarColors, BarLayout, BarSpec, BarStyle, Island, Segment};
-use crate::render::{FontContext, paint_computed};
+use crate::render::{FontContext, paint_bar, paint_computed};
 
 fn test_spec(layout: BarLayout) -> BarSpec {
     BarSpec::new(
@@ -34,9 +34,7 @@ fn pixel_bgra(data: &[u8], stride: i32, x: u32, y: u32) -> [u8; 4] {
 fn painted_island_has_background_pixel() {
     let spec = test_spec(BarLayout {
         left: vec![Island {
-            segments: vec![Segment {
-                label: "clock".into(),
-            }],
+            segments: vec![Segment::new("clock", "clock")],
         }],
         ..BarLayout::default()
     });
@@ -55,18 +53,18 @@ fn painted_island_has_background_pixel() {
 fn transparent_gap_between_regions() {
     let spec = test_spec(BarLayout {
         left: vec![Island {
-            segments: vec![Segment { label: "L".into() }],
+            segments: vec![Segment::new("l", "L")],
         }],
         center: vec![Island {
-            segments: vec![Segment { label: "C".into() }],
+            segments: vec![Segment::new("c", "C")],
         }],
         right: vec![Island {
-            segments: vec![Segment { label: "R".into() }],
+            segments: vec![Segment::new("r", "R")],
         }],
     });
-    let font = FontContext::new(&spec.style.font_name, spec.style.font_size).expect("sans-serif");
-    let computed = compute_bar(&spec, 600, &|t| font.measure(t));
-    let frame = paint_computed(&spec, &computed, &font).expect("paint");
+    let painted = paint_bar(&spec, 600).expect("paint");
+    let computed = &painted.computed;
+    let frame = &painted.frame;
 
     let gap_x = (computed.islands[0].x + computed.islands[0].width + 20.0) as u32;
     let px = pixel_bgra(&frame.data, frame.stride, gap_x.min(frame.width - 1), 4);
