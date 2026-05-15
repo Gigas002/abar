@@ -8,6 +8,7 @@ pub struct Config {
     #[serde(default)]
     pub base: Option<Base>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub layout: Option<Layout>,
 }
 
@@ -36,6 +37,7 @@ impl Default for Base {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Layout {
     pub left: Option<Vec<String>>,
     pub center: Option<Vec<String>>,
