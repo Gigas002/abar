@@ -29,11 +29,12 @@ It mirrors the **execution discipline** of `wau/docs/WAU_RS_PLAN.md`:
 
 ### 1.2 Discipline (non-negotiable, from WAU)
 
-- **Library-first**: **`libabar`** — parsing, layout math, module trait/state, theme merge, spawn helpers, Wayland protocol glue that is testable; **`abar`** — thin `main` (tracing init, CLI, load settings, run event loop).
-- **`abar` contains no domain logic** beyond wiring; **`libabar` does not depend on clap** and does not assume a specific logger implementation beyond `tracing`.
+- **Library-first**: **`libabar`** — layout math, module trait/state, spawn helpers, Wayland protocol glue that is testable without config file formats; **`abar`** — `main` (tracing, CLI, read config/theme TOML, run loop).
+- **`abar` contains no domain logic** beyond wiring; **`libabar` does not depend on clap** or **toml** and does not assume a specific logger implementation beyond `tracing`.
 - **Step sizing**: small PR-sized phases with explicit **Verify** blocks.
 - **Feature matrix in CI**: default, `--all-features`, `--no-default-features` (core must still build: e.g. bar shell + clock-only or stub modules — define explicitly in Phase 0). **Tray** is part of the first shippable bar; **MPRIS** is explicitly **not** in that milestone (see §8 post-first-release).
 - **Naming**: short, descriptive; prefer clarity over abstraction depth.
+- **Code comments**: describe current behavior only (invariants, protocol steps, non-obvious effects). No roadmap phase labels, session/chat context, prompts, or long rationale unrelated to reading the code.
 
 ### 1.3 Non-goals / dropped ashell concepts
 
@@ -65,13 +66,11 @@ abar/                          # workspace root (already exists)
     Cargo.toml                 # features defined here + re-export policy
     src/
       lib.rs
-      error.rs                 # thiserror
-      config/                  # parse + validate config.toml; merge CLI paths
-      theme/                   # parse theme.toml; defaults + module sections
-      layout/                  # resolve layout → ordered islands + alignment
-      render/                  # cairo+pango: measure, draw islands, damage regions
+      error.rs                 # thiserror (Wayland / SHM only; no config/theme)
+      layout/                  # (future) resolve layout → ordered islands + alignment
+      render/                  # (future) cairo+pango: measure, draw islands, damage regions
       wayland/                 # compositor connection, layer_shell, outputs, input
-      modules/                 # one subdirectory per built-in module
+      modules/                 # (future) one subdirectory per built-in module
         clock/
           mod.rs
           tests.rs
@@ -79,17 +78,21 @@ abar/                          # workspace root (already exists)
           mod.rs
           tests.rs
         # ... workspaces, window, tray — compositor + tray behind features; MPRIS deferred (§8)
-      spawn/                   # safe command execution, logging failures
-      model/                   # shared small types (ids, colors, keys)
+      spawn/                   # (future) safe command execution, logging failures
+      model/                   # (future) shared small types (ids, colors, keys)
   abar/
-    Cargo.toml                 # clap, tracing-subscriber, libabar features passthrough
+    Cargo.toml                 # clap, toml, tracing-subscriber, libabar features passthrough
     src/
       main.rs                  # minimal
+      error.rs                 # config/theme/file validation errors (thiserror)
+      config/                  # TOML parse + validate + read files / resolve theme path
+        mod.rs
+        tests.rs
       cli/
         mod.rs
         tests.rs
       settings/
-        mod.rs                 # merged view: cli > env > config
+        mod.rs                 # merged view: cli > env > config (later)
         tests.rs
   docs/
     PLAN.md                    # this file
@@ -98,7 +101,7 @@ abar/                          # workspace root (already exists)
 
 **Crate boundary rules**
 
-- `libabar` has **no** `clap`; **no** `println!` in library code (use `tracing`).
+- `libabar` has **no** `clap`, **no** `toml`, **no** config/theme file parsers; **no** `println!` in library code (use `tracing`).
 - After `Settings` (or `RuntimeConfig`) is built in `abar`, only that merged struct crosses into the run loop — avoid threading raw `clap` types through `libabar`.
 
 **Optional:** `abar` features are **thin passthroughs** to `libabar` features (WAU §2.2 pattern) so packagers can `cargo install abar --no-default-features --features "clock,keyboard,hyprland,tray"`.
@@ -217,7 +220,7 @@ Whenever a phase is marked complete:
 ### 7.1 Test discipline
 
 - Unit tests in **`tests.rs`** next to `mod.rs` per directory module.
-- Integration tests under `libabar/tests/` for: config parse fixtures, theme merge, layout expansion (nested arrays → islands).
+- Integration tests under `abar` (config/theme TOML) and `libabar/tests/` for: layout expansion (nested arrays → islands), render fixtures, etc.
 
 ### 7.2 CI
 
@@ -229,11 +232,11 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 0 — Workspace + hygiene + empty vertical slice
 
-- [ ] Fix root `Cargo.toml` **workspace members**: `["libabar", "abar"]` (add `libabar` crate).
-- [ ] Implement minimal `libabar` + `abar` with **no modules** yet: parse **minimal** `config.toml` (only `[base]` + empty layout) and **theme.toml**; exit with structured error if font missing.
-- [ ] Wire **tracing** + `tracing-subscriber` in `abar` only.
-- [ ] Populate **`deny.toml` licenses allow list** for used crates.
-- [ ] Hello Wayland: connect, bind globals, create **layer surface** strip (solid color from theme), no text yet.
+- [x] Fix root `Cargo.toml` **workspace members**: `["libabar", "abar"]` (add `libabar` crate).
+- [x] Implement minimal `libabar` (Wayland strip) + `abar`: **`abar`** parses **minimal** `config.toml` (only `[base]` + empty layout) and **theme.toml**; exit with structured error if font missing; **`libabar`** receives plain values (e.g. SHM pixel bytes) only.
+- [x] Wire **tracing** + `tracing-subscriber` in `abar` only.
+- [x] Populate **`deny.toml` licenses allow list** for used crates.
+- [x] Hello Wayland: connect, bind globals, create **layer surface** strip (solid color from theme), no text yet.
 
 **Verify**: all gates in §7; manual run on **Hyprland** (or another compositor you explicitly add later).
 
@@ -325,6 +328,7 @@ Update this plan when:
 - feature/module set changes
 - compositor backend policy changes
 - examples change — update `examples/*.toml` first, then this doc
+- §1.2 **Code comments** rule changes
 
 ---
 
@@ -334,3 +338,4 @@ Update this plan when:
 | ---------- | ----------------------------------------------------------------------------------------------------------------- |
 | 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                          |
 | 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release |
+| 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                         |

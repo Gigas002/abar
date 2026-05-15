@@ -1,5 +1,5 @@
 [workspace]
-members = ["abar"]
+members = ["libabar", "abar"]
 resolver = "3"
 
 [workspace.package]
