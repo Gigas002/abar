@@ -1,5 +1,5 @@
 use super::Theme;
-use libabar::color::{parse_hex_rgba_to_bgra, ParseHexRgbaError};
+use libabar::color::{ParseHexRgbaError, parse_hex_rgba_to_bgra};
 
 const THEME: &str = r##"
 [base]
@@ -31,7 +31,11 @@ fn rejects_bad_hex() {
 background_color = "161925"
 "#;
     let t = from_toml(s);
-    let bg = t.base.unwrap_or_default().background_color.unwrap_or_default();
+    let bg = t
+        .base
+        .unwrap_or_default()
+        .background_color
+        .unwrap_or_default();
     assert_eq!(
         parse_hex_rgba_to_bgra(&bg),
         Err(ParseHexRgbaError::InvalidFormat)
@@ -65,12 +69,13 @@ fn load_missing_file_yields_defaults() {
 
 #[test]
 fn example_theme_toml_deserializes() {
-    let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/theme.toml"));
+    let raw = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../examples/theme.toml"
+    ));
     let t = from_toml(raw);
     assert_eq!(
-        t.base
-            .as_ref()
-            .and_then(|b| b.background_color.as_deref()),
+        t.base.as_ref().and_then(|b| b.background_color.as_deref()),
         Some("#161925FF")
     );
     assert_eq!(

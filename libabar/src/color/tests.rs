@@ -17,12 +17,18 @@ fn parses_lowercase() {
 
 #[test]
 fn rejects_rgb_only() {
-    assert_eq!(parse_hex_rgba("#161925"), Err(ParseHexRgbaError::InvalidFormat));
+    assert_eq!(
+        parse_hex_rgba("#161925"),
+        Err(ParseHexRgbaError::InvalidFormat)
+    );
 }
 
 #[test]
 fn rgba_to_bgra_reorders_channels() {
-    assert_eq!(rgba_to_bgra([0x16, 0x19, 0x25, 255]), [0x25, 0x19, 0x16, 255]);
+    assert_eq!(
+        rgba_to_bgra([0x16, 0x19, 0x25, 255]),
+        [0x25, 0x19, 0x16, 255]
+    );
 }
 
 #[test]

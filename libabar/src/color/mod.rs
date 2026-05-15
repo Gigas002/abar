@@ -13,7 +13,9 @@ pub enum ParseHexRgbaError {
 /// Parse `#RRGGBBAA` into `[r, g, b, a]` with each channel `0..=255`.
 pub fn parse_hex_rgba(s: &str) -> Result<[u8; 4], ParseHexRgbaError> {
     let s = s.trim();
-    let hex = s.strip_prefix('#').ok_or(ParseHexRgbaError::InvalidFormat)?;
+    let hex = s
+        .strip_prefix('#')
+        .ok_or(ParseHexRgbaError::InvalidFormat)?;
     if hex.len() != 8 {
         return Err(ParseHexRgbaError::InvalidFormat);
     }
