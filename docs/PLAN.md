@@ -11,7 +11,7 @@ It mirrors the **execution discipline** of `wau/docs/WAU_RS_PLAN.md`:
 **Reference configs (source of truth for schemas):**
 
 - `examples/config.toml` — layout, modules, events as command strings, keyboard/clock options.
-- `examples/theme.toml` — colors, opacity, module-specific theme keys (ashell-like palette).
+- `examples/theme.toml` — RGBA colors, module-specific theme keys (ashell-like palette).
 - `examples/ashell_config.toml` — behavioral reference only; many keys are **intentionally dropped** (see §1.3).
 
 ---
@@ -47,7 +47,7 @@ It mirrors the **execution discipline** of `wau/docs/WAU_RS_PLAN.md`:
 
 - **Module**: a unit that contributes one island (or shares an island in a **group**). Either **built-in** (behind its own feature) or **custom** (icon + events only).
 - **Island**: one rounded background region containing one or more module **segments** (text/icon) with inner spacing.
-- **Layout row**: three logical regions `left` / `center` / `right`, each a list of **slots**; a slot is either a module name or a **nested array** expressing one island with multiple modules (see `examples/config.toml`).
+- **Layout row**: three logical regions `left` / `center` / `right`, each a list of **entries**; an entry is either a module name or a **nested array** expressing one island with multiple modules (see `examples/config.toml`).
 
 ---
 
@@ -85,7 +85,7 @@ abar/                          # workspace root (already exists)
     src/
       main.rs                  # minimal
       error.rs                 # config/theme/file validation errors (thiserror)
-      config/                  # TOML parse + validate + read files / resolve theme path
+      config/                  # TOML parse + read files / resolve theme path
         mod.rs
         tests.rs
       cli/
@@ -116,19 +116,19 @@ abar/                          # workspace root (already exists)
 
 - **`[base]`**: `font` (required), `theme` filename or path relative to themes dir.
 - **`[layout]`**: `left` / `center` / `right` lists; nested arrays = single island, inner order = left-to-right segments.
-- **Per-module tables** (e.g. `[keyboard]`, `[clock]`) for module-specific options; **global event tables** live on each module definition — for custom modules under `[custom_modules]`, for built-ins merge: defaults < `[clock]` etc.
+- **Per-module tables** (e.g. `[keyboard]`, `[clock]`) for module-specific options; **global event tables** live on each module definition — custom modules under `[modules].custom` (array of `{ name, icon, on_* }`), for built-ins merge: defaults < `[clock]` etc.
 - **Events**: string commands executed via shell (`sh -c` or explicit documented runner); scroll/button names as in example.
 
 **Invariants**
 
-- Unknown keys: policy TBD in Phase 1 (recommend **warn** via tracing once strict mode is off; **fail** in `--validate` mode if implemented).
-- Missing `font` in base: **fail fast at startup** with clear error (per example comment).
+- Unknown keys: ignored by serde unless we add explicit handling later.
+- Missing `font` in base: TOML deserialize error if `[base]` / `font` absent.
 
 ### 3.2 `theme.toml` (see `examples/theme.toml`)
 
 **Intent**
 
-- Global `background_color`, `foreground_color`, `opacity`; optional per-module sections (e.g. `[workspaces]` colors, `visibility_mode`).
+- Global `background_color`, `foreground_color` (RGBA hex, alpha in color); optional per-module sections (e.g. `[workspaces]` colors, `visibility_mode`).
 - **`scale_factor`**: deferred (TODO in example) — Phase 2 can hardcode `1.0` + env-based fractional scale from Wayland only.
 
 ### 3.3 Mapping from `ashell_config.toml`
@@ -197,7 +197,7 @@ Each built-in module: **`libabar/src/modules/<name>/`** + **`tests.rs`**, gated 
 | `workspaces` | compositor feature (`hyprland` first)                | monitor filter per theme `visibility_mode`                |
 | `window`     | active title                                         | ellipsis, compositor feature                              |
 | `tray`       | **required** — StatusNotifier-style host, **`zbus`** | behavior reference: **ashell** (not UI stack); no libdbus |
-| `custom`     | icon + events                                        | always available if `custom_modules` table exists         |
+| `custom`     | icon + events                                        | always available via `[modules].custom` entries           |
 | `mpris`      | **post-first-release** (§8)                          | track/artist via **`zbus`** when implemented              |
 
 **Custom modules**: unique name, **icon name** required; missing icon → **startup error** (per examples).
@@ -242,17 +242,17 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 1 — Config + theme + layout model
 
-- [ ] Full serde models matching `examples/config.toml` / `theme.toml` (including nested layout arrays, `custom_modules`, event strings).
-- [ ] XDG path resolution + `--config` / `--theme` flags (`abar` / `clap`).
-- [ ] Validation: unknown modules, duplicate names, feature not enabled at compile time → compile-time `cfg` + runtime check for config that references disabled modules (clear error).
+- [x] Full serde models matching `examples/config.toml` / `theme.toml` (including nested layout arrays, `[modules].custom`, event strings).
+- [x] XDG path resolution + `--config` / `--theme` flags (`abar` / `clap`).
+- [x] No runtime validation layer (parse only); feature gates remain compile-time via Cargo features.
 
-**Verify**: unit tests for parse + validation; golden error messages snapshot optional.
+**Verify**: unit tests for parse/deserialize of `examples/*.toml`.
 
 ### Phase 2 — Render core (Cairo + Pango)
 
 - [ ] Font loading, Pango measurement helpers, Cairo rounded-rect helper.
 - [ ] Island layout pass: compute bar height from font metrics + padding; horizontal distribution for `left`/`center`/`right` (center cluster truly centered).
-- [ ] Draw static placeholder text per module slot (“clock”, “kb”, …) before real data.
+- [ ] Draw static placeholder text per module entry (“clock”, “kb”, …) before real data.
 
 **Verify**: headless tests where possible (image buffer pixel samples); optional `insta` PNG snapshots gated behind feature.
 
@@ -303,7 +303,7 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 ## 9. Definition of done (v0 / first working draft)
 
 - [ ] Bar shows on Wayland with **islands** matching theme from `examples/theme.toml`.
-- [ ] Layout from `examples/config.toml` works for **clock**, **keyboard**, **custom_modules**, **tray**, and **Hyprland**-backed **workspaces + window** (document any gaps vs ashell).
+- [ ] Layout from `examples/config.toml` works for **clock**, **keyboard**, **`[modules].custom`**, **tray**, and **Hyprland**-backed **workspaces + window** (document any gaps vs ashell).
 - [ ] **Tray** works with real StatusNotifier items via **`zbus`** (no libdbus).
 - [ ] **MPRIS** is **not** required for this milestone (planned in §8 post-first-release).
 - [ ] Pointer actions spawn user commands; built-in clock/keyboard behaviors work without GUIs.

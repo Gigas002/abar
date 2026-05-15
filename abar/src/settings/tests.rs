@@ -6,7 +6,7 @@ use crate::settings::Settings;
 use crate::theme::Theme;
 
 #[test]
-fn resolve_uses_config_font() {
+fn resolve_uses_config_font_and_theme_colors() {
     let cfg: Config = toml::from_str(
         r#"
 [base]
@@ -19,7 +19,7 @@ right = []
 "#,
     )
     .unwrap();
-    let theme: Theme = toml::from_str(
+    let theme = Theme::parse_str(
         r##"
 [base]
 background_color = "#112233FF"

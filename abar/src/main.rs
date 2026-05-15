@@ -11,24 +11,26 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::Cli;
+use crate::config::{default_config_path, Config};
+use crate::theme::Theme;
 
 fn main() -> ExitCode {
     logger::init();
     let cli = Cli::parse();
 
-    let config_path = cli.config.clone().unwrap_or_else(config::default_path);
-    let config = config::Config::load(&config_path);
+    let config_path = cli.config.clone().unwrap_or_else(default_config_path);
+    let config = Config::load(&config_path);
 
-    let theme_path = cli.theme.clone().unwrap_or_else(|| {
-        let theme_name = config
-            .base
-            .clone()
-            .unwrap_or_default()
-            .theme
-            .unwrap_or_default();
-        theme::resolve_path(&config_path, theme_name.as_str())
-    });
-    let theme = theme::Theme::load(&theme_path);
+    let theme_name = config
+        .base
+        .as_ref()
+        .and_then(|b| b.theme.as_deref())
+        .unwrap_or("theme.toml");
+    let theme_path = cli
+        .theme
+        .clone()
+        .unwrap_or_else(|| theme::resolve_path(&config_path, theme_name));
+    let theme = Theme::load(&theme_path);
 
     let settings = match settings::Settings::resolve(&cli, config, theme) {
         Ok(s) => s,

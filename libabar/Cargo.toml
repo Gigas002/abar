@@ -10,6 +10,13 @@ description = "Wayland layer-shell bar runtime."
 
 [features]
 default = []
+clock = []
+keyboard = []
+tray = []
+workspaces = ["hyprland"]
+window = ["hyprland"]
+hyprland = []
+mpris = []
 
 [dependencies]
 thiserror = "2"
