@@ -1,0 +1,9 @@
+# Phase 0 minimal bar: `[base]` + empty `[layout]` only (see docs/PLAN.md).
+[base]
+font = "NotoSans Nerd Font"
+theme = "theme.toml"
+
+[layout]
+left = []
+center = []
+right = []
