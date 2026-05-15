@@ -17,10 +17,7 @@ pub struct Modules {
 
 impl Modules {
     pub fn custom_by_name(&self, name: &str) -> Option<&Custom> {
-        self.custom
-            .as_ref()?
-            .iter()
-            .find(|m| m.name == name)
+        self.custom.as_ref()?.iter().find(|m| m.name == name)
     }
 }
 

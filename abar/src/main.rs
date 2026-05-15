@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::Cli;
-use crate::config::{default_config_path, Config};
+use crate::config::{Config, default_config_path};
 use crate::theme::Theme;
 
 fn main() -> ExitCode {
