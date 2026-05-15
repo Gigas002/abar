@@ -1,0 +1,55 @@
+name: Test and coverage
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  test-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Build cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Run tests
+        run: cargo test --all-features --verbose
+      # - name: Generate coverage report (libabar)
+      #   run: |
+      #     cargo llvm-cov --all-features -p libabar --lcov --output-path lcov-libabar.info
+      - name: Generate coverage report (abar)
+        run: |
+          cargo llvm-cov --all-features -p abar --lcov --output-path lcov-abar.info
+      # - name: Upload libabar coverage to Codecov
+      #   uses: codecov/codecov-action@v6
+      #   with:
+      #     files: ./lcov-libabar.info
+      #     flags: libabar
+      #     name: libabar
+      #     fail_ci_if_error: false
+      #     verbose: true
+      #   env:
+      #     CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload abar coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          files: ./lcov-abar.info
+          flags: abar
+          name: abar
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

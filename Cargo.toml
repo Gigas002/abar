@@ -1,0 +1,13 @@
+[workspace]
+members = ["abar"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-only"
+authors = ["gigas002 <gigas002@pm.me>"]
+homepage = "https://github.com/Gigas002/abar"
+description = "Minimalistic wayland-native bar, created with pango and cairo and inspired by ashell/waybar"
+keywords = ["wayland", "bar", "pango", "cairo", "ashell", "waybar"]
+repository = "https://github.com/Gigas002/abar"
+version = "0.1.0"
