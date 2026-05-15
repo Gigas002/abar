@@ -18,4 +18,7 @@ pub enum AbarError {
 
     #[error("render error: {0}")]
     Render(String),
+
+    #[error("async runtime error: {0}")]
+    AsyncRuntime(String),
 }

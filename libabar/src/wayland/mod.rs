@@ -1,22 +1,32 @@
 use std::fs::File;
 use std::io::Write;
 use std::os::unix::io::AsFd;
+
 use tracing::{debug, warn};
+use wayland_client::protocol::wl_pointer::{Axis, ButtonState};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
 };
 
 use crate::error::AbarError;
+use crate::input::{self, PointerAction};
+use crate::layout::ComputedBar;
 use crate::model::BarSpec;
 use crate::render::paint_bar;
+use crate::spawn;
+
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+const BTN_MIDDLE: u32 = 0x112;
 
 /// Blocks until the layer surface is closed or dispatch fails.
 pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
+    spawn::ensure_runtime()?;
     let conn = Connection::connect_to_env()?;
     let display = conn.display();
     let mut event_queue = conn.new_event_queue();
@@ -30,6 +40,7 @@ pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
         compositor: None,
         shm: None,
         layer_shell: None,
+        seat: None,
         surface: None,
         layer_surface: None,
         pending_configure: None,
@@ -37,6 +48,8 @@ pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
         pool: None,
         pool_file: None,
         bar_height: 1,
+        computed: None,
+        pointer: PointerState::default(),
     };
 
     while state.running {
@@ -48,12 +61,21 @@ pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
     Ok(())
 }
 
+#[derive(Default)]
+struct PointerState {
+    pointer: Option<wl_pointer::WlPointer>,
+    on_surface: bool,
+    x: f64,
+    y: f64,
+}
+
 struct AppState {
     running: bool,
     spec: BarSpec,
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
+    seat: Option<wl_seat::WlSeat>,
     surface: Option<wl_surface::WlSurface>,
     layer_surface: Option<ZwlrLayerSurfaceV1>,
     pending_configure: Option<(u32, u32, u32)>,
@@ -61,6 +83,8 @@ struct AppState {
     pool: Option<wl_shm_pool::WlShmPool>,
     pool_file: Option<File>,
     bar_height: u32,
+    computed: Option<ComputedBar>,
+    pointer: PointerState,
 }
 
 impl AppState {
@@ -89,6 +113,25 @@ impl AppState {
         self.surface = Some(surface);
         self.layer_surface = Some(layer_surface);
         debug!("layer surface created (initial commit without buffer)");
+    }
+
+    fn bind_pointer(&mut self, seat: &wl_seat::WlSeat, qh: &QueueHandle<Self>) {
+        if self.pointer.pointer.is_some() {
+            return;
+        }
+        let pointer = seat.get_pointer(qh, ());
+        self.pointer.pointer = Some(pointer);
+        debug!("pointer bound");
+    }
+
+    fn dispatch_pointer_action(&self, action: PointerAction) {
+        let Some(computed) = self.computed.as_ref() else {
+            return;
+        };
+        if !self.pointer.on_surface {
+            return;
+        }
+        input::dispatch_pointer_action(computed, self.pointer.x, self.pointer.y, action);
     }
 
     fn on_configure(
@@ -135,16 +178,17 @@ impl AppState {
         width: u32,
         height: u32,
     ) -> Result<(), AbarError> {
-        let frame = paint_bar(&self.spec, width)?;
-        self.bar_height = frame.height;
+        let painted = paint_bar(&self.spec, width)?;
+        self.bar_height = painted.frame.height;
+        self.computed = Some(painted.computed);
 
         if let Some(ls) = self.layer_surface.as_ref() {
-            ls.set_exclusive_zone(frame.height as i32);
-            ls.set_size(0, frame.height);
+            ls.set_exclusive_zone(painted.frame.height as i32);
+            ls.set_size(0, painted.frame.height);
         }
 
-        let stride = frame.stride;
-        let buf_h = frame.height;
+        let stride = painted.frame.stride;
+        let buf_h = painted.frame.height;
         let size = (stride as u64)
             .checked_mul(buf_h as u64)
             .ok_or_else(|| AbarError::WaylandProtocol("buffer size overflow".into()))?;
@@ -158,7 +202,7 @@ impl AppState {
             source,
         })?;
 
-        file.write_all(&frame.data)
+        file.write_all(&painted.frame.data)
             .map_err(|source| AbarError::Io {
                 path: std::path::PathBuf::from("/dev/shm"),
                 source,
@@ -236,8 +280,103 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.layer_shell = Some(shell);
                     state.try_init_layer_shell(qh);
                 }
+                "wl_seat" => {
+                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 7.min(version), qh, ());
+                    state.seat = Some(seat);
+                }
                 _ => {}
             }
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(caps),
+        } = event
+            && caps.contains(wl_seat::Capability::Pointer)
+        {
+            state.bind_pointer(seat, qh);
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter { surface, .. } => {
+                state.pointer.on_surface =
+                    state.surface.as_ref().is_some_and(|ours| &surface == ours);
+            }
+            wl_pointer::Event::Leave { surface, .. }
+                if state.surface.as_ref().is_some_and(|ours| &surface == ours) =>
+            {
+                state.pointer.on_surface = false;
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer.x = surface_x;
+                state.pointer.y = surface_y;
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: btn_state,
+                ..
+            } => {
+                if btn_state != WEnum::Value(ButtonState::Pressed) {
+                    return;
+                }
+                let action = match button {
+                    BTN_LEFT => Some(PointerAction::LeftClick),
+                    BTN_RIGHT => Some(PointerAction::RightClick),
+                    BTN_MIDDLE => Some(PointerAction::MiddleClick),
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    state.dispatch_pointer_action(action);
+                }
+            }
+            wl_pointer::Event::AxisDiscrete { axis, discrete, .. } => {
+                if axis != WEnum::Value(Axis::VerticalScroll) || discrete == 0 {
+                    return;
+                }
+                let action = if discrete < 0 {
+                    PointerAction::ScrollUp
+                } else {
+                    PointerAction::ScrollDown
+                };
+                state.dispatch_pointer_action(action);
+            }
+            wl_pointer::Event::Axis { axis, value, .. } => {
+                if axis != WEnum::Value(Axis::VerticalScroll) || value == 0.0 {
+                    return;
+                }
+                let action = if value < 0.0 {
+                    PointerAction::ScrollUp
+                } else {
+                    PointerAction::ScrollDown
+                };
+                state.dispatch_pointer_action(action);
+            }
+            _ => {}
         }
     }
 }

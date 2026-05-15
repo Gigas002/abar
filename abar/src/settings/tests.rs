@@ -50,5 +50,20 @@ fn resolve_builds_layout_from_example_config() {
     assert_eq!(s.bar.layout.center.len(), 1);
     assert!(!s.bar.layout.right.is_empty());
     assert_eq!(s.bar.layout.right[1].segments[1].label, "clock");
+    assert_eq!(s.bar.layout.right[1].segments[1].module_id, "clock");
+    assert_eq!(
+        s.bar.layout.right[1].segments[1]
+            .events
+            .on_left_click
+            .as_deref(),
+        Some("rusti-cal")
+    );
+    assert_eq!(
+        s.bar.layout.left[0].segments[0]
+            .events
+            .on_left_click
+            .as_deref(),
+        Some("btm")
+    );
     assert_eq!(s.font_size(), 16.0);
 }

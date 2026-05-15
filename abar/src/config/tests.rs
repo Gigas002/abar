@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use super::{Config, Layout, config_dir, default_config_path, layout::LayoutEntry};
+use super::{
+    Config, Layout, config_dir, default_config_path, events::events_for_module, layout::LayoutEntry,
+};
 
 const MINIMAL: &str = r#"
 [base]
@@ -183,8 +185,29 @@ fn to_bar_layout_nested_group_is_one_island() {
     let bar = layout.to_bar_layout();
     assert_eq!(bar.right.len(), 1);
     assert_eq!(bar.right[0].segments.len(), 2);
+    assert_eq!(bar.right[0].segments[0].module_id, "tray");
     assert_eq!(bar.right[0].segments[0].label, "tray");
     assert_eq!(bar.right[0].segments[1].label, "clock");
+}
+
+#[test]
+fn events_for_module_reads_builtin_and_custom_tables() {
+    let cfg = parse(EXAMPLE_CONFIG);
+    assert_eq!(
+        events_for_module(&cfg, "clock").on_left_click.as_deref(),
+        Some("rusti-cal")
+    );
+    assert_eq!(
+        events_for_module(&cfg, "system_info")
+            .on_left_click
+            .as_deref(),
+        Some("btm")
+    );
+    assert!(
+        events_for_module(&cfg, "workspaces")
+            .on_left_click
+            .is_none()
+    );
 }
 
 #[test]

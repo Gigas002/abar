@@ -31,6 +31,7 @@ It mirrors the **execution discipline** of `wau/docs/WAU_RS_PLAN.md`:
 
 - **Library-first**: **`libabar`** — layout math, module trait/state, spawn helpers, Wayland protocol glue that is testable without config file formats; **`abar`** — `main` (tracing, CLI, read config/theme TOML, run loop).
 - **`abar` contains no domain logic** beyond wiring; **`libabar` does not depend on clap** or **toml** and does not assume a specific logger implementation beyond `tracing`.
+- **Tokio for async work**: use **[`tokio`](https://crates.io/crates/tokio)** as the standard runtime for background tasks — config event commands (`tokio::process`), later compositor IPC, tray D-Bus, and timers. The Wayland client loop stays **synchronous** on the main thread (`blocking_dispatch`); never block it on subprocess or socket I/O — offload with `tokio::spawn` (and `spawn_blocking` only when a sync API is unavoidable).
 - **Step sizing**: small PR-sized phases with explicit **Verify** blocks.
 - **Feature matrix in CI**: default, `--all-features`, `--no-default-features` (core must still build: e.g. bar shell + clock-only or stub modules — define explicitly in Phase 0). **Tray** is part of the first shippable bar; **MPRIS** is explicitly **not** in that milestone (see §8 post-first-release).
 - **Naming**: short, descriptive; prefer clarity over abstraction depth.
@@ -78,7 +79,7 @@ abar/                          # workspace root (already exists)
           mod.rs
           tests.rs
         # ... workspaces, window, tray — compositor + tray behind features; MPRIS deferred (§8)
-      spawn/                   # (future) safe command execution, logging failures
+      spawn/                   # Tokio runtime + sh -c command execution (logging failures)
       model/                   # (future) shared small types (ids, colors, keys)
   abar/
     Cargo.toml                 # clap, toml, tracing-subscriber, libabar features passthrough
@@ -117,7 +118,7 @@ abar/                          # workspace root (already exists)
 - **`[base]`**: `font` (required), `theme` filename or path relative to themes dir.
 - **`[layout]`**: `left` / `center` / `right` lists; nested arrays = single island, inner order = left-to-right segments.
 - **Per-module tables** (e.g. `[keyboard]`, `[clock]`) for module-specific options; **global event tables** live on each module definition — custom modules under `[modules].custom` (array of `{ name, icon, on_* }`), for built-ins merge: defaults < `[clock]` etc.
-- **Events**: string commands executed via shell (`sh -c` or explicit documented runner); scroll/button names as in example.
+- **Events**: string commands executed via shell (`sh -c` through `tokio::process` on the shared runtime); scroll/button names as in example.
 
 **Invariants**
 
@@ -258,8 +259,8 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 3 — Pointer input + spawn
 
-- [ ] Wayland pointer events → hit-test which island/segment.
-- [ ] Map to configured command; execute without blocking UI thread (use `std::thread` or small bounded worker; log failures).
+- [x] Wayland pointer events → hit-test which island/segment.
+- [x] Map to configured command; execute without blocking the Wayland thread via **Tokio** (`tokio::spawn` + `tokio::process::Command` with `sh -c`; log failures).
 
 **Verify**: integration test with mock command (script that touches tempfile).
 
@@ -272,7 +273,7 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 5 — Compositor modules (`workspaces`, `window`)
 
-- [ ] Behind **`hyprland`** feature only for the near-term; IPC integrated with the main Wayland event loop (avoid starving the Wayland socket — non-blocking IPC or short-lived queries on a timer).
+- [ ] Behind **`hyprland`** feature only for the near-term; IPC integrated with the main Wayland event loop via **Tokio** (async sockets/streams or timed tasks on the runtime — avoid starving the Wayland socket).
 
 **Verify**: manual on Hyprland; mocked JSON/socket tests where feasible.
 
@@ -317,6 +318,7 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 - **Edition**: `2024` (already in workspace package).
 - **Versions**: `x.y` or `x` in manifests; lockfile committed.
 - **Health**: avoid archived / unmaintained crates.
+- **Async runtime**: **`tokio`** (`rt-multi-thread`, `process`, `time`, …) in **`libabar`** — standard for parallel background work; keep the dependency lean (no full workspace stack unless a phase needs it).
 - **Heavy deps**: justify in PR (e.g. **`zbus`** for **tray** and later **MPRIS**); keep unused code paths behind features.
 
 ---
@@ -339,3 +341,4 @@ Update this plan when:
 | 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                          |
 | 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release |
 | 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                         |
+| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                 |

@@ -10,6 +10,9 @@ use serde::Deserialize;
 
 #[allow(unused_imports)]
 pub use events::Events;
+pub(crate) use events::apply_module_events;
+#[allow(unused_imports)]
+pub(crate) use events::events_for_module;
 pub use layout::Layout;
 #[allow(unused_imports)]
 pub use layout::LayoutEntry;
