@@ -70,3 +70,4 @@ build/
 wau/
 tofi-rs/
 ashell/
+examples/ashell_config.toml
