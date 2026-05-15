@@ -1,0 +1,74 @@
+/// One text segment inside a grouped island.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    pub label: String,
+}
+
+/// Rounded background region with one or more segments (left to right).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Island {
+    pub segments: Vec<Segment>,
+}
+
+/// Three logical bar regions; each entry is one island.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BarLayout {
+    pub left: Vec<Island>,
+    pub center: Vec<Island>,
+    pub right: Vec<Island>,
+}
+
+/// Colors in **BGRA** byte order for `WL_SHM_FORMAT_ARGB8888` buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarColors {
+    pub background: [u8; 4],
+    pub foreground: [u8; 4],
+}
+
+/// Spacing and typography for layout and paint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarStyle {
+    pub font_name: String,
+    pub font_size: f64,
+    pub bar_padding_x: f64,
+    pub bar_padding_y: f64,
+    pub island_padding_x: f64,
+    pub island_padding_y: f64,
+    pub island_radius: f64,
+    pub island_gap: f64,
+    pub segment_gap: f64,
+}
+
+impl Default for BarStyle {
+    fn default() -> Self {
+        Self {
+            font_name: "sans-serif".to_string(),
+            font_size: 14.0,
+            bar_padding_x: 8.0,
+            bar_padding_y: 4.0,
+            island_padding_x: 12.0,
+            island_padding_y: 4.0,
+            island_radius: 12.0,
+            island_gap: 8.0,
+            segment_gap: 8.0,
+        }
+    }
+}
+
+/// Fully resolved bar description for one paint pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarSpec {
+    pub colors: BarColors,
+    pub style: BarStyle,
+    pub layout: BarLayout,
+}
+
+impl BarSpec {
+    pub fn new(colors: BarColors, style: BarStyle, layout: BarLayout) -> Self {
+        Self {
+            colors,
+            style,
+            layout,
+        }
+    }
+}

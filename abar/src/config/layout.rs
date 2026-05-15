@@ -1,3 +1,4 @@
+use libabar::{BarLayout, Island, Segment};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -39,5 +40,43 @@ impl Layout {
             }
         }
         names
+    }
+
+    pub fn to_bar_layout(&self) -> BarLayout {
+        BarLayout {
+            left: entries_to_islands(self.left.as_deref()),
+            center: entries_to_islands(self.center.as_deref()),
+            right: entries_to_islands(self.right.as_deref()),
+        }
+    }
+}
+
+fn entries_to_islands(entries: Option<&[LayoutEntry]>) -> Vec<Island> {
+    let Some(entries) = entries else {
+        return Vec::new();
+    };
+    entries.iter().map(entry_to_island).collect()
+}
+
+fn entry_to_island(entry: &LayoutEntry) -> Island {
+    Island {
+        segments: entry
+            .module_names()
+            .iter()
+            .map(|name| Segment {
+                label: segment_label(name),
+            })
+            .collect(),
+    }
+}
+
+fn segment_label(module: &str) -> String {
+    match module {
+        "clock" => "clock".into(),
+        "keyboard" => "kb".into(),
+        "workspaces" => "ws".into(),
+        "window" => "window".into(),
+        "tray" => "tray".into(),
+        other => other.into(),
     }
 }

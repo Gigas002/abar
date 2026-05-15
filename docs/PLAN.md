@@ -250,9 +250,9 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 2 — Render core (Cairo + Pango)
 
-- [ ] Font loading, Pango measurement helpers, Cairo rounded-rect helper.
-- [ ] Island layout pass: compute bar height from font metrics + padding; horizontal distribution for `left`/`center`/`right` (center cluster truly centered).
-- [ ] Draw static placeholder text per module entry (“clock”, “kb”, …) before real data.
+- [x] Font loading, Pango measurement helpers, Cairo rounded-rect helper.
+- [x] Island layout pass: compute bar height from font metrics + padding; horizontal distribution for `left`/`center`/`right` (center cluster truly centered).
+- [x] Draw static placeholder text per module entry (“clock”, “kb”, …) before real data.
 
 **Verify**: headless tests where possible (image buffer pixel samples); optional `insta` PNG snapshots gated behind feature.
 

@@ -19,6 +19,9 @@ hyprland = []
 mpris = []
 
 [dependencies]
+cairo-rs = { version = "0.22", default-features = false, features = ["png"] }
+pango = { version = "0.22", features = ["v1_42"] }
+pangocairo = "0.22"
 thiserror = "2"
 tracing = "0.1"
 wayland-client = "0.31"

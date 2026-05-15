@@ -41,7 +41,8 @@ fn main() -> ExitCode {
     };
 
     tracing::info!(
-        font = %settings.font,
+        font_name = %settings.font_name(),
+        font_size = settings.font_size(),
         theme = %theme_path.display(),
         "abar starting"
     );

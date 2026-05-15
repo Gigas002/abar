@@ -1,5 +1,3 @@
-//! Top anchored `zwlr_layer_shell_v1` surface filled with one ARGB8888 color.
-
 use std::fs::File;
 use std::io::Write;
 use std::os::unix::io::AsFd;
@@ -14,12 +12,11 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 };
 
 use crate::error::AbarError;
-
-const BAR_HEIGHT: u32 = 32;
+use crate::model::BarSpec;
+use crate::render::paint_bar;
 
 /// Blocks until the layer surface is closed or dispatch fails.
-/// `fill` is one pixel in **BGRA** byte order for `WL_SHM_FORMAT_ARGB8888`.
-pub fn run_layer_strip(fill: [u8; 4]) -> Result<(), AbarError> {
+pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
     let conn = Connection::connect_to_env()?;
     let display = conn.display();
     let mut event_queue = conn.new_event_queue();
@@ -29,7 +26,7 @@ pub fn run_layer_strip(fill: [u8; 4]) -> Result<(), AbarError> {
 
     let mut state = AppState {
         running: true,
-        fill,
+        spec,
         compositor: None,
         shm: None,
         layer_shell: None,
@@ -39,6 +36,7 @@ pub fn run_layer_strip(fill: [u8; 4]) -> Result<(), AbarError> {
         buffer: None,
         pool: None,
         pool_file: None,
+        bar_height: 1,
     };
 
     while state.running {
@@ -52,7 +50,7 @@ pub fn run_layer_strip(fill: [u8; 4]) -> Result<(), AbarError> {
 
 struct AppState {
     running: bool,
-    fill: [u8; 4],
+    spec: BarSpec,
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
@@ -62,6 +60,7 @@ struct AppState {
     buffer: Option<wl_buffer::WlBuffer>,
     pool: Option<wl_shm_pool::WlShmPool>,
     pool_file: Option<File>,
+    bar_height: u32,
 }
 
 impl AppState {
@@ -81,11 +80,10 @@ impl AppState {
             layer_shell.get_layer_surface(&surface, None, Layer::Top, "abar".into(), qh, ());
 
         layer_surface.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
-        layer_surface.set_exclusive_zone(BAR_HEIGHT as i32);
+        layer_surface.set_exclusive_zone(self.bar_height as i32);
         layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer_surface.set_size(0, BAR_HEIGHT);
+        layer_surface.set_size(0, self.bar_height);
 
-        // Initial commit without a buffer (required by wlr-layer-shell).
         surface.commit();
 
         self.surface = Some(surface);
@@ -137,12 +135,18 @@ impl AppState {
         width: u32,
         height: u32,
     ) -> Result<(), AbarError> {
-        let stride = width
-            .checked_mul(4)
-            .ok_or_else(|| AbarError::WaylandProtocol("buffer stride overflow".into()))?
-            as i32;
+        let frame = paint_bar(&self.spec, width)?;
+        self.bar_height = frame.height;
+
+        if let Some(ls) = self.layer_surface.as_ref() {
+            ls.set_exclusive_zone(frame.height as i32);
+            ls.set_size(0, frame.height);
+        }
+
+        let stride = frame.stride;
+        let buf_h = frame.height;
         let size = (stride as u64)
-            .checked_mul(height as u64)
+            .checked_mul(buf_h as u64)
             .ok_or_else(|| AbarError::WaylandProtocol("buffer size overflow".into()))?;
 
         self.buffer.take();
@@ -154,15 +158,11 @@ impl AppState {
             source,
         })?;
 
-        let px = self.fill;
-        let mut buf = vec![0u8; size as usize];
-        for chunk in buf.chunks_exact_mut(4) {
-            chunk.copy_from_slice(&px);
-        }
-        file.write_all(&buf).map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
+        file.write_all(&frame.data)
+            .map_err(|source| AbarError::Io {
+                path: std::path::PathBuf::from("/dev/shm"),
+                source,
+            })?;
         file.flush().map_err(|source| AbarError::Io {
             path: std::path::PathBuf::from("/dev/shm"),
             source,
@@ -172,7 +172,7 @@ impl AppState {
         let buffer = pool.create_buffer(
             0,
             width as i32,
-            height as i32,
+            buf_h as i32,
             stride,
             wl_shm::Format::Argb8888,
             qh,
@@ -184,12 +184,14 @@ impl AppState {
             .as_ref()
             .ok_or_else(|| AbarError::WaylandProtocol("missing wl_surface during paint".into()))?;
         surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, width as i32, buf_h as i32);
         surface.commit();
 
         self.pool_file = Some(file);
         self.pool = Some(pool);
         self.buffer = Some(buffer);
 
+        let _ = height;
         Ok(())
     }
 }
