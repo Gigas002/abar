@@ -37,11 +37,25 @@ foreground_color = "#FFFFFFFF"
 }
 
 #[test]
-fn resolve_builds_layout_from_example_config() {
-    let raw = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../examples/config.toml"
-    ));
+fn resolve_builds_layout_with_builtin_modules() {
+    // Uses only built-in module names so icon validation is skipped (no custom modules).
+    let raw = r#"
+[base]
+font_name = "NotoSans Nerd Font"
+font_size = 16
+
+[layout]
+left = ["workspaces"]
+center = ["window"]
+right = [
+    ["keyboard"],
+    ["tray", "clock"],
+]
+
+[clock]
+formats = ["%R %Z %d.%m.%Y"]
+on_left_click = "rusti-cal"
+"#;
     let cfg: Config = toml::from_str(raw).unwrap();
     let theme = Theme::default();
     let cli = Cli::try_parse_from(["abar"]).unwrap();
@@ -58,12 +72,33 @@ fn resolve_builds_layout_from_example_config() {
             .as_deref(),
         Some("rusti-cal")
     );
-    assert_eq!(
-        s.bar.layout.left[0].segments[0]
-            .events
-            .on_left_click
-            .as_deref(),
-        Some("btm")
-    );
     assert_eq!(s.font_size(), 16.0);
+}
+
+#[test]
+fn resolve_falls_back_to_text_for_missing_icon() {
+    use libabar::DisplayMode;
+
+    let raw = r#"
+[base]
+font_name = "sans-serif"
+font_size = 14
+
+[modules]
+custom = [{ name = "mymod", icon = "abar-nonexistent-icon-xyz" }]
+
+[layout]
+left = ["mymod"]
+"#;
+    let cfg: Config = toml::from_str(raw).unwrap();
+    let theme = Theme::default();
+    let cli = Cli::try_parse_from(["abar"]).unwrap();
+    let s = Settings::resolve(&cli, cfg, theme).unwrap();
+    let seg = &s.bar.layout.left[0].segments[0];
+    assert_eq!(
+        seg.display_mode,
+        DisplayMode::TextOnly,
+        "should fall back to text"
+    );
+    assert_eq!(seg.label, "mymod");
 }

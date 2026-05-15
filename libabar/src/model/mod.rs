@@ -30,19 +30,45 @@ impl SegmentEvents {
     }
 }
 
+/// Whether a segment paints its icon, its text label, or both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    #[default]
+    TextOnly,
+    IconOnly,
+}
+
 /// One module segment inside a grouped island.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     pub module_id: String,
     pub label: String,
+    /// FreeDesktop icon name; required when `display_mode` is `IconOnly`.
+    pub icon_name: Option<String>,
+    pub display_mode: DisplayMode,
     pub events: SegmentEvents,
 }
 
 impl Segment {
+    /// Construct a text-only segment with no icon.
     pub fn new(module_id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             module_id: module_id.into(),
             label: label.into(),
+            icon_name: None,
+            display_mode: DisplayMode::TextOnly,
+            events: SegmentEvents::default(),
+        }
+    }
+
+    /// Construct an icon-only segment for a custom module.
+    pub fn icon_only(module_id: impl Into<String>, icon_name: impl Into<String>) -> Self {
+        let id = module_id.into();
+        Self {
+            label: id.clone(),
+            module_id: id,
+            icon_name: Some(icon_name.into()),
+            display_mode: DisplayMode::IconOnly,
             events: SegmentEvents::default(),
         }
     }

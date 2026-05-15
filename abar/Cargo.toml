@@ -13,7 +13,7 @@ name = "abar"
 path = "src/main.rs"
 
 [features]
-default = ["clock", "keyboard", "tray", "workspaces", "window", "hyprland"]
+default = ["clock", "keyboard", "tray", "workspaces", "window", "hyprland", "svg"]
 clock = ["libabar/clock"]
 keyboard = ["libabar/keyboard"]
 tray = ["libabar/tray"]
@@ -21,6 +21,7 @@ workspaces = ["libabar/workspaces"]
 window = ["libabar/window"]
 hyprland = ["libabar/hyprland"]
 mpris = ["libabar/mpris"]
+svg = ["libabar/svg"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

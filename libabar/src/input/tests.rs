@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::layout::{ComputedBar, PlacedIsland, PlacedSegment};
-use crate::model::SegmentEvents;
+use crate::model::{DisplayMode, SegmentEvents};
 
 use crate::spawn::ensure_runtime;
 
@@ -27,6 +27,8 @@ fn dispatch_spawns_configured_command() {
             segments: vec![PlacedSegment {
                 module_id: "test".into(),
                 label: "t".into(),
+                icon_name: None,
+                display_mode: DisplayMode::TextOnly,
                 events: SegmentEvents {
                     on_left_click: Some(command),
                     ..SegmentEvents::default()
@@ -64,6 +66,8 @@ fn dispatch_without_configured_command_is_noop() {
             segments: vec![PlacedSegment {
                 module_id: "x".into(),
                 label: "x".into(),
+                icon_name: None,
+                display_mode: DisplayMode::TextOnly,
                 events: SegmentEvents::default(),
                 x: 0.0,
                 y: 0.0,

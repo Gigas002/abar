@@ -17,6 +17,7 @@ workspaces = ["hyprland"]
 window = ["hyprland"]
 hyprland = []
 mpris = []
+svg = ["dep:resvg"]
 
 [dependencies]
 cairo-rs = { version = "0.22", default-features = false, features = ["png"] }
@@ -29,3 +30,4 @@ wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 tempfile = "3"
+resvg = { version = "0.47", optional = true }

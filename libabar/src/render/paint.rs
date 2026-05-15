@@ -2,8 +2,9 @@ use cairo::{Context, Format, ImageSurface, Operator};
 use pangocairo::functions::show_layout;
 
 use crate::error::AbarError;
+use crate::icon::IconCache;
 use crate::layout::ComputedBar;
-use crate::model::{BarColors, BarSpec};
+use crate::model::{BarColors, BarSpec, DisplayMode};
 
 use super::font::FontContext;
 use super::shape::rounded_rect;
@@ -25,10 +26,14 @@ pub struct PaintOutput {
 }
 
 /// Paint the full bar into a CPU buffer.
-pub fn paint_bar(spec: &BarSpec, bar_width: u32) -> Result<PaintOutput, AbarError> {
+pub fn paint_bar(
+    spec: &BarSpec,
+    bar_width: u32,
+    icons: &mut IconCache,
+) -> Result<PaintOutput, AbarError> {
     let font = FontContext::new(&spec.style.font_name, spec.style.font_size)?;
     let computed = crate::layout::compute_bar(spec, bar_width, &|text| font.measure(text));
-    let frame = paint_computed(spec, &computed, &font)?;
+    let frame = paint_computed(spec, &computed, &font, icons)?;
     Ok(PaintOutput { frame, computed })
 }
 
@@ -36,6 +41,7 @@ pub fn paint_computed(
     spec: &BarSpec,
     computed: &ComputedBar,
     font: &FontContext,
+    icons: &mut IconCache,
 ) -> Result<Frame, AbarError> {
     let width = computed.width;
     let height = computed.height.max(1);
@@ -69,7 +75,14 @@ pub fn paint_computed(
                 .map_err(|e| AbarError::Render(format!("island fill: {e}")))?;
 
             for seg in &island.segments {
-                draw_segment_text(&cr, font, &spec.colors, seg)?;
+                match seg.display_mode {
+                    DisplayMode::TextOnly => draw_segment_text(&cr, font, &spec.colors, seg)?,
+                    DisplayMode::IconOnly => {
+                        if let Some(name) = &seg.icon_name {
+                            draw_segment_icon(&cr, icons, name, spec.style.font_size, seg)?;
+                        }
+                    }
+                }
             }
         }
     }
@@ -115,6 +128,37 @@ fn draw_segment_text(
     cr.move_to(tx, ty);
     set_source_bgra(cr, colors.foreground);
     show_layout(cr, layout);
+    Ok(())
+}
+
+/// Paint an icon centered within the segment rect.
+///
+/// Used for custom modules; the same helper will be reused by tray item pixmaps in Phase 7.
+fn draw_segment_icon(
+    cr: &Context,
+    icons: &mut IconCache,
+    name: &str,
+    size: f64,
+    seg: &crate::layout::PlacedSegment,
+) -> Result<(), AbarError> {
+    let size_px = size.round() as u32;
+    let Some(surface) = icons.get(name, size_px) else {
+        return Ok(());
+    };
+
+    let tx = seg.x + (seg.width - size) / 2.0;
+    let ty = seg.y + (seg.height - size) / 2.0;
+
+    cr.save()
+        .map_err(|e| AbarError::Render(format!("cr save for icon: {e}")))?;
+    cr.set_source_surface(surface, tx, ty)
+        .map_err(|e| AbarError::Render(format!("set_source_surface icon: {e}")))?;
+    cr.rectangle(tx, ty, size, size);
+    cr.fill()
+        .map_err(|e| AbarError::Render(format!("fill icon rect: {e}")))?;
+    cr.restore()
+        .map_err(|e| AbarError::Render(format!("cr restore after icon: {e}")))?;
+
     Ok(())
 }
 

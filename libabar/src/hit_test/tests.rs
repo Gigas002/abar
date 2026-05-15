@@ -1,5 +1,5 @@
 use crate::layout::{ComputedBar, PlacedIsland, PlacedSegment};
-use crate::model::SegmentEvents;
+use crate::model::{DisplayMode, SegmentEvents};
 
 use super::hit_test;
 
@@ -16,6 +16,8 @@ fn sample_bar() -> ComputedBar {
                 segments: vec![PlacedSegment {
                     module_id: "clock".into(),
                     label: "clock".into(),
+                    icon_name: None,
+                    display_mode: DisplayMode::TextOnly,
                     events: SegmentEvents::default(),
                     x: 20.0,
                     y: 8.0,
@@ -32,6 +34,8 @@ fn sample_bar() -> ComputedBar {
                     PlacedSegment {
                         module_id: "kb".into(),
                         label: "kb".into(),
+                        icon_name: None,
+                        display_mode: DisplayMode::TextOnly,
                         events: SegmentEvents::default(),
                         x: 312.0,
                         y: 8.0,
@@ -41,6 +45,8 @@ fn sample_bar() -> ComputedBar {
                     PlacedSegment {
                         module_id: "tray".into(),
                         label: "tray".into(),
+                        icon_name: None,
+                        display_mode: DisplayMode::TextOnly,
                         events: SegmentEvents::default(),
                         x: 350.0,
                         y: 8.0,
