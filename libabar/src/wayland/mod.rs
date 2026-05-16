@@ -555,10 +555,10 @@ struct PointerState {
     // Set when an Axis event fires; cleared on Frame. Prevents the paired
     // AxisDiscrete (which arrives after Axis) from double-counting the click.
     had_axis: bool,
-    /// Index into `ComputedBar::islands` of the island currently under the pointer.
-    hovered_island: Option<usize>,
-    /// Index into `ComputedBar::islands` of the island being pressed.
-    pressed_island: Option<usize>,
+    /// `(island_index, segment_index)` of the segment currently under the pointer.
+    hovered: Option<(usize, usize)>,
+    /// `(island_index, segment_index)` of the segment being pressed.
+    pressed: Option<(usize, usize)>,
 }
 
 struct AppState {
@@ -650,9 +650,9 @@ impl AppState {
         let new_hover = self
             .computed
             .as_ref()
-            .and_then(|c| crate::hit_test::island_index_at(c, x, y));
-        if new_hover != self.pointer.hovered_island {
-            self.pointer.hovered_island = new_hover;
+            .and_then(|c| crate::hit_test::segment_coords_at(c, x, y));
+        if new_hover != self.pointer.hovered {
+            self.pointer.hovered = new_hover;
             if let Some(shm) = self.shm.clone()
                 && let Err(e) = self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
             {
@@ -663,9 +663,9 @@ impl AppState {
 
     /// Clear hover and pressed state on pointer leave, repaint if needed.
     fn clear_interaction(&mut self, qh: &QueueHandle<Self>) {
-        let had = self.pointer.hovered_island.is_some() || self.pointer.pressed_island.is_some();
-        self.pointer.hovered_island = None;
-        self.pointer.pressed_island = None;
+        let had = self.pointer.hovered.is_some() || self.pointer.pressed.is_some();
+        self.pointer.hovered = None;
+        self.pointer.pressed = None;
         if had
             && let Some(shm) = self.shm.clone()
             && let Err(e) = self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
@@ -846,8 +846,8 @@ impl AppState {
             &computed,
             font,
             &mut self.icon_cache,
-            self.pointer.hovered_island,
-            self.pointer.pressed_island,
+            self.pointer.hovered,
+            self.pointer.pressed,
         )?;
         self.bar_height = frame.height;
         self.computed = Some(computed);
@@ -1025,7 +1025,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 ..
             } => {
                 if btn_state == WEnum::Value(ButtonState::Pressed) {
-                    state.pointer.pressed_island = state.pointer.hovered_island;
+                    state.pointer.pressed = state.pointer.hovered;
                     if let Some(shm) = state.shm.clone()
                         && let Err(e) = state.resize_and_paint(
                             &shm,
@@ -1046,9 +1046,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                         state.dispatch_pointer_action(action, qh);
                     }
                 } else if btn_state == WEnum::Value(ButtonState::Released)
-                    && state.pointer.pressed_island.is_some()
+                    && state.pointer.pressed.is_some()
                 {
-                    state.pointer.pressed_island = None;
+                    state.pointer.pressed = None;
                     if let Some(shm) = state.shm.clone()
                         && let Err(e) = state.resize_and_paint(
                             &shm,

@@ -48,8 +48,8 @@ pub fn paint_computed(
     computed: &ComputedBar,
     font: &FontContext,
     icons: &mut IconCache,
-    hover_island: Option<usize>,
-    active_island: Option<usize>,
+    hover_seg: Option<(usize, usize)>,
+    active_seg: Option<(usize, usize)>,
 ) -> Result<Frame, AbarError> {
     let width = computed.width;
     let height = computed.height.max(1);
@@ -69,19 +69,17 @@ pub fn paint_computed(
             .map_err(|e| AbarError::Render(format!("clear: {e}")))?;
         cr.set_operator(Operator::Over);
 
-        for (idx, island) in computed.islands.iter().enumerate() {
-            let bg = if Some(idx) == active_island {
-                spec.colors
-                    .active_background
-                    .unwrap_or_else(|| lighten(spec.colors.background, 0.25))
-            } else if Some(idx) == hover_island {
-                spec.colors
-                    .hover_background
-                    .unwrap_or_else(|| lighten(spec.colors.background, 0.12))
+        for (island_idx, island) in computed.islands.iter().enumerate() {
+            let is_single = island.segments.len() == 1;
+
+            // Single-module island: highlight the whole island background.
+            // Grouped island: always use normal background; per-segment rects follow.
+            let island_bg = if is_single {
+                seg_bg(spec, Some((island_idx, 0)), hover_seg, active_seg)
             } else {
                 spec.colors.background
             };
-            set_source_bgra(&cr, bg);
+            set_source_bgra(&cr, island_bg);
             rounded_rect(
                 &cr,
                 island.x,
@@ -92,6 +90,54 @@ pub fn paint_computed(
             );
             cr.fill()
                 .map_err(|e| AbarError::Render(format!("island fill: {e}")))?;
+
+            // Per-segment highlight rects for grouped islands, clipped to the island shape.
+            if !is_single {
+                cr.save()
+                    .map_err(|e| AbarError::Render(format!("cr save clip: {e}")))?;
+                rounded_rect(
+                    &cr,
+                    island.x,
+                    island.y,
+                    island.width,
+                    island.height,
+                    spec.style.island_radius,
+                );
+                cr.clip();
+
+                let n = island.segments.len();
+                for (seg_idx, seg) in island.segments.iter().enumerate() {
+                    let bg = seg_bg(
+                        spec,
+                        Some((island_idx, seg_idx)),
+                        hover_seg,
+                        active_seg,
+                    );
+                    if bg == spec.colors.background {
+                        continue;
+                    }
+                    // Distribute the segment gap evenly: each segment owns half on each side,
+                    // except at the island edges where the full island boundary is used.
+                    let half_gap = spec.style.segment_gap / 2.0;
+                    let left = if seg_idx == 0 {
+                        island.x
+                    } else {
+                        seg.x - half_gap
+                    };
+                    let right = if seg_idx == n - 1 {
+                        island.x + island.width
+                    } else {
+                        seg.x + seg.width + half_gap
+                    };
+                    set_source_bgra(&cr, bg);
+                    cr.rectangle(left, island.y, right - left, island.height);
+                    cr.fill()
+                        .map_err(|e| AbarError::Render(format!("seg highlight fill: {e}")))?;
+                }
+
+                cr.restore()
+                    .map_err(|e| AbarError::Render(format!("cr restore clip: {e}")))?;
+            }
 
             for seg in &island.segments {
                 match seg.display_mode {
@@ -181,6 +227,26 @@ fn draw_segment_icon(
         .map_err(|e| AbarError::Render(format!("cr restore after icon: {e}")))?;
 
     Ok(())
+}
+
+/// Resolve the effective background color for a segment key given hover/active state.
+fn seg_bg(
+    spec: &BarSpec,
+    key: Option<(usize, usize)>,
+    hover: Option<(usize, usize)>,
+    active: Option<(usize, usize)>,
+) -> [u8; 4] {
+    if key == active {
+        spec.colors
+            .active_background
+            .unwrap_or_else(|| lighten(spec.colors.background, 0.25))
+    } else if key == hover {
+        spec.colors
+            .hover_background
+            .unwrap_or_else(|| lighten(spec.colors.background, 0.12))
+    } else {
+        spec.colors.background
+    }
 }
 
 fn set_source_bgra(cr: &Context, bgra: [u8; 4]) {

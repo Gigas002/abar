@@ -4,11 +4,29 @@ fn point_in_rect(x: f64, y: f64, rx: f64, ry: f64, rw: f64, rh: f64) -> bool {
     x >= rx && x < rx + rw && y >= ry && y < ry + rh
 }
 
-/// Return the index of the island whose bounding rect contains `(x, y)`, if any.
-pub fn island_index_at(computed: &ComputedBar, x: f64, y: f64) -> Option<usize> {
-    computed.islands.iter().position(|island| {
-        point_in_rect(x, y, island.x, island.y, island.width, island.height)
-    })
+/// Return `(island_index, segment_index)` of the segment under `(x, y)`, if any.
+pub fn segment_coords_at(computed: &ComputedBar, x: f64, y: f64) -> Option<(usize, usize)> {
+    for (island_idx, island) in computed.islands.iter().enumerate() {
+        if !point_in_rect(x, y, island.x, island.y, island.width, island.height) {
+            continue;
+        }
+        for (seg_idx, seg) in island.segments.iter().enumerate() {
+            if point_in_rect(x, y, seg.x, seg.y, seg.width, seg.height) {
+                return Some((island_idx, seg_idx));
+            }
+        }
+        if let Some(seg_idx) = island
+            .segments
+            .iter()
+            .position(|s| x >= s.x && x < s.x + s.width)
+        {
+            return Some((island_idx, seg_idx));
+        }
+        if !island.segments.is_empty() {
+            return Some((island_idx, 0));
+        }
+    }
+    None
 }
 
 /// Return the segment under `(x, y)` in bar surface coordinates, if any.
