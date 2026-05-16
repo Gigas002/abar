@@ -40,7 +40,7 @@ fn painted_island_has_background_pixel() {
         ..BarLayout::default()
     });
     let font = FontContext::new(&spec.style.font_name, spec.style.font_size).expect("sans-serif");
-    let computed = compute_bar(&spec, 400, &|t| font.measure(t));
+    let computed = compute_bar(&spec, 400, &|t, _| font.measure(t));
     let mut icons = IconCache::with_dirs(vec![], "hicolor");
     let frame = paint_computed(&spec, &computed, &font, &mut icons).expect("paint");
 

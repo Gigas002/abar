@@ -18,6 +18,10 @@ pub use model::{
     BarColors, BarLayout, BarSpec, BarStyle, DisplayMode, Island, Segment, SegmentEvents,
 };
 pub use modules::ModuleConfigs;
+#[cfg(feature = "workspaces")]
+pub use modules::workspaces::{
+    VisibilityMode as WorkspaceVisibilityMode, WorkspacesConfig, trim_alpha,
+};
 pub use render::{FontContext, Frame, PaintOutput, paint_bar};
 pub use spawn::{ensure_runtime, spawn_shell_command};
 pub use wayland::run_bar;

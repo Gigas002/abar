@@ -25,6 +25,7 @@ pub struct PlacedSegment {
     pub icon_name: Option<String>,
     pub display_mode: DisplayMode,
     pub events: crate::model::SegmentEvents,
+    pub use_markup: bool,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -165,6 +166,7 @@ fn place_island(
                 icon_name: segment.icon_name.clone(),
                 display_mode: segment.display_mode,
                 events: segment.events.clone(),
+                use_markup: segment.use_markup,
                 x: seg_x,
                 y: seg_y,
                 width: seg_w,
@@ -185,10 +187,13 @@ fn place_island(
 }
 
 /// Measure all islands and run the layout pass for `spec` at `bar_width`.
+///
+/// `measure(text, is_markup)` returns `(width, height)` in pixels.  When `is_markup` is true the
+/// text contains Pango markup and measurement must use `set_markup`; otherwise `set_text` is used.
 pub fn compute_bar(
     spec: &BarSpec,
     bar_width: u32,
-    measure: &impl Fn(&str) -> (f64, f64),
+    measure: &impl Fn(&str, bool) -> (f64, f64),
 ) -> ComputedBar {
     let left_metrics = spec
         .layout
@@ -230,14 +235,14 @@ pub fn compute_bar(
 fn measure_island(
     island: &Island,
     style: &BarStyle,
-    measure: &impl Fn(&str) -> (f64, f64),
+    measure: &impl Fn(&str, bool) -> (f64, f64),
 ) -> IslandMetrics {
     let mut max_h = 0.0_f64;
     let mut segment_widths = Vec::with_capacity(island.segments.len());
 
     for seg in &island.segments {
         let (w, h) = match seg.display_mode {
-            DisplayMode::TextOnly => measure(&seg.label),
+            DisplayMode::TextOnly => measure(&seg.label, seg.use_markup),
             // Icon segments occupy a 1× em box (square).
             DisplayMode::IconOnly => (style.font_size, style.font_size),
         };
@@ -246,7 +251,7 @@ fn measure_island(
     }
 
     if island.segments.is_empty() {
-        let (_, h) = measure(" ");
+        let (_, h) = measure(" ", false);
         max_h = h;
     }
 

@@ -27,9 +27,15 @@ fn parse_single_layout_us() {
 fn parse_two_layouts_us_ru() {
     use xkbcommon::xkb;
     let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-    let Some(km) =
-        xkb::Keymap::new_from_names(&ctx, "", "", "us,ru", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-    else {
+    let Some(km) = xkb::Keymap::new_from_names(
+        &ctx,
+        "",
+        "",
+        "us,ru",
+        "",
+        None,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    ) else {
         return;
     };
     let names = parse_layout_names(&km.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));

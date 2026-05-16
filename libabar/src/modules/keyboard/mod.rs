@@ -19,7 +19,9 @@ pub fn parse_layout_names(keymap: &str) -> Vec<String> {
     ) else {
         return Vec::new();
     };
-    (0..km.num_layouts()).map(|i| km.layout_get_name(i).to_string()).collect()
+    (0..km.num_layouts())
+        .map(|i| km.layout_get_name(i).to_string())
+        .collect()
 }
 
 /// Return the display label for the given layout group index.

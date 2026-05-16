@@ -281,7 +281,7 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 ### Phase 5 — `clock` + `keyboard` modules
 
 - [x] `clock`: formats + timezones rotation; tick per minute only (no per-second updates); optional overrides.
-- [ ] `keyboard`: display current active layout name; **no built-in switching logic** — user wires layout switching via `on_left_click` / `on_right_click` in config (e.g. `hyprctl switchxkblayout all next`).
+- [x] `keyboard`: display current active layout name; **no built-in switching logic** — user wires layout switching via `on_left_click` / `on_right_click` in config (e.g. `hyprctl switchxkblayout all next`).
   - **`hyprland` feature**: subscribe to Hyprland event socket (`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock`) via Tokio background task; parse `activelayout>>keyboard,layoutname` lines → update label in real-time, no polling.
   - **`xkb` feature** (no `hyprland`): compositor-agnostic path via `wl_keyboard` seat + **libxkbcommon** state tracking.
   - **Neither**: segment shows static initial label from `[keyboard].layouts[0]` in config.
@@ -290,7 +290,8 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 6 — Compositor modules (`workspaces`, `window`)
 
-- [ ] Behind **`hyprland`** feature only for the near-term; IPC integrated with the main Wayland event loop via **Tokio** (async sockets/streams or timed tasks on the runtime — avoid starving the Wayland socket).
+- [x] **`workspaces`**: behind **`hyprland`** feature; Hyprland IPC via `AsyncEventListener` (workspace changed/added/deleted/moved); Pango markup for `active_color` / `inactive_color` from theme; `visibility_mode = "monitor_specific"` filters to active monitor's workspaces; compositor-agnostic `format_label` + `WorkspacesConfig` in `libabar`; `use_markup` flag added to `Segment` / `PlacedSegment` for color-differentiated workspace rendering.
+- [ ] **`window`**: active title, ellipsis, compositor feature (not yet implemented).
 
 **Verify**: manual on Hyprland; mocked JSON/socket tests where feasible.
 
@@ -362,3 +363,4 @@ Update this plan when:
 | 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                                                                              |
 | 2026-05-16 | **Phase 5** keyboard: no built-in switching; hyprland feature = event socket, otherwise wl_keyboard + libxkbcommon                                                        |
 | 2026-05-16 | **Phase 5** implemented: clock (chrono + chrono-tz, minute tick), keyboard (hyprland socket / xkb / static), poll loop replaces blocking_dispatch; xkb = separate feature |
+| 2026-05-16 | **Phase 6** workspaces: `use_markup` on Segment/PlacedSegment; Pango markup rendering path; Hyprland IPC via AsyncEventListener; monitor-specific filter; compositor-agnostic format_label |

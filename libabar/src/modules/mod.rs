@@ -11,9 +11,13 @@ pub struct ModuleConfigs {
     pub clock: Option<clock::ClockConfig>,
     #[cfg(feature = "keyboard")]
     pub keyboard: Option<keyboard::KeyboardConfig>,
+    #[cfg(feature = "workspaces")]
+    pub workspaces: Option<workspaces::WorkspacesConfig>,
 }
 
 #[cfg(feature = "clock")]
 pub mod clock;
 #[cfg(feature = "keyboard")]
 pub mod keyboard;
+#[cfg(feature = "workspaces")]
+pub mod workspaces;

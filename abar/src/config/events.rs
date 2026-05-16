@@ -24,6 +24,9 @@ pub fn events_for_module(config: &Config, module_id: &str) -> SegmentEvents {
     match module_id {
         "clock" => events_from_config(config.clock.as_ref().and_then(|c| c.events.as_ref())),
         "keyboard" => events_from_config(config.keyboard.as_ref().and_then(|k| k.events.as_ref())),
+        "workspaces" => {
+            events_from_config(config.workspaces.as_ref().and_then(|w| w.events.as_ref()))
+        }
         _ => SegmentEvents::default(),
     }
 }

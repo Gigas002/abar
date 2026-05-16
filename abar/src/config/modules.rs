@@ -37,7 +37,10 @@ pub struct Clock {
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
-pub struct Workspaces {}
+pub struct Workspaces {
+    #[serde(flatten)]
+    pub events: Option<Events>,
+}
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Window {}

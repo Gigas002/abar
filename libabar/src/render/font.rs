@@ -29,6 +29,17 @@ impl FontContext {
         )
     }
 
+    /// Measure text that contains Pango markup.  Sets the layout to markup mode so that a
+    /// subsequent `show_layout` call renders with the embedded color/style attributes.
+    pub fn measure_markup(&self, markup: &str) -> (f64, f64) {
+        self.layout.set_markup(markup);
+        let (w, h) = self.layout.size();
+        (
+            f64::from(w) / f64::from(pango::SCALE),
+            f64::from(h) / f64::from(pango::SCALE),
+        )
+    }
+
     pub fn layout(&self) -> &Layout {
         &self.layout
     }

@@ -32,7 +32,13 @@ pub fn paint_bar(
     icons: &mut IconCache,
 ) -> Result<PaintOutput, AbarError> {
     let font = FontContext::new(&spec.style.font_name, spec.style.font_size)?;
-    let computed = crate::layout::compute_bar(spec, bar_width, &|text| font.measure(text));
+    let computed = crate::layout::compute_bar(spec, bar_width, &|text, is_markup| {
+        if is_markup {
+            font.measure_markup(text)
+        } else {
+            font.measure(text)
+        }
+    });
     let frame = paint_computed(spec, &computed, &font, icons)?;
     Ok(PaintOutput { frame, computed })
 }
@@ -119,15 +125,17 @@ fn draw_segment_text(
     colors: &BarColors,
     seg: &crate::layout::PlacedSegment,
 ) -> Result<(), AbarError> {
-    let layout = font.layout();
-    layout.set_text(&seg.label);
-    let (tw, th) = font.measure(&seg.label);
+    let (tw, th) = if seg.use_markup {
+        font.measure_markup(&seg.label)
+    } else {
+        font.measure(&seg.label)
+    };
     let tx = seg.x + (seg.width - tw) / 2.0;
     let ty = seg.y + (seg.height - th) / 2.0;
 
     cr.move_to(tx, ty);
     set_source_bgra(cr, colors.foreground);
-    show_layout(cr, layout);
+    show_layout(cr, font.layout());
     Ok(())
 }
 

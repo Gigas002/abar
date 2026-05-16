@@ -47,6 +47,8 @@ pub struct Segment {
     pub icon_name: Option<String>,
     pub display_mode: DisplayMode,
     pub events: SegmentEvents,
+    /// When true, `label` is treated as Pango markup (e.g. `<span foreground="…">…</span>`).
+    pub use_markup: bool,
 }
 
 impl Segment {
@@ -58,6 +60,7 @@ impl Segment {
             icon_name: None,
             display_mode: DisplayMode::TextOnly,
             events: SegmentEvents::default(),
+            use_markup: false,
         }
     }
 
@@ -70,7 +73,14 @@ impl Segment {
             icon_name: Some(icon_name.into()),
             display_mode: DisplayMode::IconOnly,
             events: SegmentEvents::default(),
+            use_markup: false,
         }
+    }
+
+    /// Enable Pango markup rendering for this segment.
+    pub fn with_markup(mut self) -> Self {
+        self.use_markup = true;
+        self
     }
 }
 

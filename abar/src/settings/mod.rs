@@ -7,6 +7,8 @@ use libabar::{
 use crate::cli::Cli;
 use crate::config::{self, Base as ConfigBase, Config};
 use crate::error::Error;
+#[cfg(feature = "workspaces")]
+use crate::theme::Workspaces as ThemeWorkspaces;
 use crate::theme::{Base as ThemeBase, Theme};
 
 #[derive(Debug)]
@@ -26,7 +28,7 @@ impl Settings {
             .unwrap_or_default();
         config::apply_module_events(&mut layout, &config);
 
-        let theme_base = theme.base.unwrap_or_default();
+        let theme_base = theme.base.clone().unwrap_or_default();
         let config_base = config.base.clone().unwrap_or_default();
 
         let background = theme_base
@@ -44,8 +46,12 @@ impl Settings {
 
         apply_icon_fallbacks(&mut layout, font_size);
 
+        // Enable Pango markup on workspaces segments when theme colors are configured.
+        #[cfg(feature = "workspaces")]
+        apply_markup_for_workspaces(&mut layout, theme.workspaces.as_ref());
+
         // Build module configs and set live initial labels on the matching segments.
-        let module_configs = build_module_configs(&config, &mut layout);
+        let module_configs = build_module_configs(&config, &theme, &mut layout);
 
         Ok(Self {
             bar: BarSpec::new(
@@ -77,7 +83,11 @@ impl Settings {
 
 /// Build `ModuleConfigs` from the parsed config and set initial segment labels
 /// so the bar shows real data immediately on the first paint.
-fn build_module_configs(_config: &Config, _layout: &mut BarLayout) -> ModuleConfigs {
+fn build_module_configs(
+    _config: &Config,
+    _theme: &Theme,
+    _layout: &mut BarLayout,
+) -> ModuleConfigs {
     #[cfg(feature = "clock")]
     let clock = {
         use libabar::modules::clock::{ClockConfig, parse_tz};
@@ -118,15 +128,38 @@ fn build_module_configs(_config: &Config, _layout: &mut BarLayout) -> ModuleConf
         })
     };
 
+    #[cfg(feature = "workspaces")]
+    let workspaces = {
+        use libabar::modules::workspaces::{VisibilityMode, WorkspacesConfig, trim_alpha};
+        let theme_ws = _theme.workspaces.as_ref().cloned().unwrap_or_default();
+        let visibility_mode = theme_ws
+            .visibility_mode
+            .as_deref()
+            .map(VisibilityMode::parse)
+            .unwrap_or_default();
+        let active_color = theme_ws.active_color.as_deref().map(trim_alpha);
+        let inactive_color = theme_ws.inactive_color.as_deref().map(trim_alpha);
+        let cfg = WorkspacesConfig {
+            visibility_mode,
+            active_color,
+            inactive_color,
+        };
+        // Workspaces shows a placeholder until the background task sends the first update.
+        set_segment_label(_layout, "workspaces", "...");
+        Some(cfg)
+    };
+
     ModuleConfigs {
         #[cfg(feature = "clock")]
         clock,
         #[cfg(feature = "keyboard")]
         keyboard,
+        #[cfg(feature = "workspaces")]
+        workspaces,
     }
 }
 
-#[cfg(any(feature = "clock", feature = "keyboard"))]
+#[cfg(any(feature = "clock", feature = "keyboard", feature = "workspaces"))]
 fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
     for island in layout
         .left
@@ -137,6 +170,29 @@ fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
         for seg in &mut island.segments {
             if seg.module_id == module_id {
                 seg.label = label.to_string();
+            }
+        }
+    }
+}
+
+/// Enable Pango markup on workspaces segments when the theme provides `active_color` or
+/// `inactive_color`.  Must run before `build_module_configs` sets the initial label.
+#[cfg(feature = "workspaces")]
+fn apply_markup_for_workspaces(layout: &mut BarLayout, theme_ws: Option<&ThemeWorkspaces>) {
+    let has_colors =
+        theme_ws.is_some_and(|w| w.active_color.is_some() || w.inactive_color.is_some());
+    if !has_colors {
+        return;
+    }
+    for island in layout
+        .left
+        .iter_mut()
+        .chain(layout.center.iter_mut())
+        .chain(layout.right.iter_mut())
+    {
+        for seg in &mut island.segments {
+            if seg.module_id == "workspaces" {
+                seg.use_markup = true;
             }
         }
     }
