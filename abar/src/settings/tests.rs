@@ -63,6 +63,10 @@ on_left_click = "rusti-cal"
     assert!(!s.bar.layout.left.is_empty());
     assert_eq!(s.bar.layout.center.len(), 1);
     assert!(!s.bar.layout.right.is_empty());
+    // When the clock feature is active the segment shows live time, not the placeholder.
+    #[cfg(feature = "clock")]
+    assert_ne!(s.bar.layout.right[1].segments[1].label, "clock");
+    #[cfg(not(feature = "clock"))]
     assert_eq!(s.bar.layout.right[1].segments[1].label, "clock");
     assert_eq!(s.bar.layout.right[1].segments[1].module_id, "clock");
     assert_eq!(

@@ -5,6 +5,7 @@ pub mod icon;
 pub mod input;
 pub mod layout;
 pub mod model;
+pub mod modules;
 pub mod render;
 pub mod spawn;
 pub mod wayland;
@@ -16,5 +17,7 @@ pub use input::PointerAction;
 pub use model::{
     BarColors, BarLayout, BarSpec, BarStyle, DisplayMode, Island, Segment, SegmentEvents,
 };
+pub use modules::ModuleConfigs;
 pub use render::{FontContext, Frame, PaintOutput, paint_bar};
 pub use spawn::{ensure_runtime, spawn_shell_command};
+pub use wayland::run_bar;

@@ -1,6 +1,7 @@
 use libabar::color::parse_hex_rgba_to_bgra;
 use libabar::{
-    BarColors, BarLayout, BarSpec, BarStyle, DisplayMode, default_search_dirs, resolve_icon,
+    BarColors, BarLayout, BarSpec, BarStyle, DisplayMode, ModuleConfigs, default_search_dirs,
+    resolve_icon,
 };
 
 use crate::cli::Cli;
@@ -11,16 +12,17 @@ use crate::theme::{Base as ThemeBase, Theme};
 #[derive(Debug)]
 pub struct Settings {
     pub bar: BarSpec,
+    pub modules: ModuleConfigs,
 }
 
 impl Settings {
     pub fn resolve(_cli: &Cli, config: Config, theme: Theme) -> Result<Self, Error> {
-        let modules = config.modules.as_ref();
+        let modules_cfg = config.modules.as_ref();
 
         let mut layout = config
             .layout
             .as_ref()
-            .map(|l| l.to_bar_layout(modules))
+            .map(|l| l.to_bar_layout(modules_cfg))
             .unwrap_or_default();
         config::apply_module_events(&mut layout, &config);
 
@@ -40,8 +42,10 @@ impl Settings {
             .font_size
             .unwrap_or_else(|| ConfigBase::default().font_size.unwrap());
 
-        // Try to resolve each custom icon; fall back to text for any that are missing.
         apply_icon_fallbacks(&mut layout, font_size);
+
+        // Build module configs and set live initial labels on the matching segments.
+        let module_configs = build_module_configs(&config, &mut layout);
 
         Ok(Self {
             bar: BarSpec::new(
@@ -56,6 +60,7 @@ impl Settings {
                 },
                 layout,
             ),
+            modules: module_configs,
         })
     }
 }
@@ -67,6 +72,62 @@ impl Settings {
 
     pub fn font_size(&self) -> f64 {
         self.bar.style.font_size
+    }
+}
+
+/// Build `ModuleConfigs` from the parsed config and set initial segment labels
+/// so the bar shows real data immediately on the first paint.
+fn build_module_configs(_config: &Config, _layout: &mut BarLayout) -> ModuleConfigs {
+    #[cfg(feature = "clock")]
+    let config = _config;
+    #[cfg(feature = "clock")]
+    let layout = _layout;
+    #[cfg(feature = "clock")]
+    let clock = {
+        use libabar::modules::clock::{ClockConfig, parse_tz};
+        config.clock.as_ref().map(|c| {
+            let formats = c
+                .formats
+                .clone()
+                .unwrap_or_else(|| vec!["%H:%M".to_string()]);
+            let timezones = c
+                .timezones
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|name| parse_tz(name))
+                .collect::<Vec<_>>();
+            let cfg = ClockConfig { formats, timezones };
+
+            // Prime the clock segment with the current time so it's never blank.
+            let fmt = cfg.formats.first().map_or("%H:%M", |s| s.as_str());
+            let tz = cfg.timezones.first().copied();
+            let initial = libabar::modules::clock::current_label(fmt, tz);
+            set_segment_label(layout, "clock", &initial);
+
+            cfg
+        })
+    };
+
+    ModuleConfigs {
+        #[cfg(feature = "clock")]
+        clock,
+    }
+}
+
+#[cfg(feature = "clock")]
+fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
+    for island in layout
+        .left
+        .iter_mut()
+        .chain(layout.center.iter_mut())
+        .chain(layout.right.iter_mut())
+    {
+        for seg in &mut island.segments {
+            if seg.module_id == module_id {
+                seg.label = label.to_string();
+            }
+        }
     }
 }
 

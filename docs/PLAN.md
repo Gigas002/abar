@@ -192,15 +192,15 @@ Each backend behind its own feature so CI and minimal users do not link unused I
 
 Each built-in module: **`libabar/src/modules/<name>/`** + **`tests.rs`**, gated by **`features.<name>`**.
 
-| Module       | First-milestone scope                                | Notes                                                     |
-| ------------ | ---------------------------------------------------- | --------------------------------------------------------- |
-| `clock`      | timezones + format cycle + optional `on_left_click`  | no GUI calendar — external command only                   |
-| `keyboard`   | layout switch + labels from config                   | optional override clicks                                  |
-| `workspaces` | compositor feature (`hyprland` first)                | monitor filter per theme `visibility_mode`                |
-| `window`     | active title                                         | ellipsis, compositor feature                              |
-| `tray`       | **required** — StatusNotifier-style host, **`zbus`** | behavior reference: **ashell** (not UI stack); no libdbus |
+| Module       | First-milestone scope                                | Notes                                                                           |
+| ------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `clock`      | timezones + format cycle + optional `on_left_click`  | no GUI calendar — external command only                                         |
+| `keyboard`   | layout switch + labels from config                   | optional override clicks                                                        |
+| `workspaces` | compositor feature (`hyprland` first)                | monitor filter per theme `visibility_mode`                                      |
+| `window`     | active title                                         | ellipsis, compositor feature                                                    |
+| `tray`       | **required** — StatusNotifier-style host, **`zbus`** | behavior reference: **ashell** (not UI stack); no libdbus                       |
 | `custom`     | icon + events                                        | **icon paint in Phase 4** — config `icon` parsed today but not shown until then |
-| `mpris`      | **post-first-release** (§8)                          | track/artist via **`zbus`** when implemented              |
+| `mpris`      | **post-first-release** (§8)                          | track/artist via **`zbus`** when implemented                                    |
 
 **Custom modules**: unique name, **icon name** required (FreeDesktop). Without **Phase 4** they appear as placeholder **text** (module name) and are not usable as designed. After Phase 4: missing icon at startup → **structured error** in `abar` (per `examples/config.toml`).
 
@@ -280,8 +280,11 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 5 — `clock` + `keyboard` modules
 
-- [ ] `clock`: formats + timezones rotation; tick each second/minute based on whether seconds in format; optional overrides.
-- [ ] `keyboard`: integrate **xkb** / compositor layout APIs as needed, or `locale1` / **Hyprland** — **pick simplest** for the near-term compositor target (§5.2).
+- [x] `clock`: formats + timezones rotation; tick per minute only (no per-second updates); optional overrides.
+- [ ] `keyboard`: display current active layout name; **no built-in switching logic** — user wires layout switching via `on_left_click` / `on_right_click` in config (e.g. `hyprctl switchxkblayout all next`).
+  - **`hyprland` feature**: subscribe to Hyprland event socket (`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock`) via Tokio background task; parse `activelayout>>keyboard,layoutname` lines → update label in real-time, no polling.
+  - **`xkb` feature** (no `hyprland`): compositor-agnostic path via `wl_keyboard` seat + **libxkbcommon** state tracking.
+  - **Neither**: segment shows static initial label from `[keyboard].layouts[0]` in config.
 
 **Verify**: unit tests for format rotation logic (no Wayland).
 
@@ -350,10 +353,12 @@ Update this plan when:
 
 ## Revision history
 
-| Date       | Change                                                                                                            |
-| ---------- | ----------------------------------------------------------------------------------------------------------------- |
-| 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                          |
-| 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release |
-| 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                         |
-| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                 |
-| 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                      |
+| Date       | Change                                                                                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                                                                                  |
+| 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release                                                         |
+| 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                                                                                 |
+| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                                                                         |
+| 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                                                                              |
+| 2026-05-16 | **Phase 5** keyboard: no built-in switching; hyprland feature = event socket, otherwise wl_keyboard + libxkbcommon                                                        |
+| 2026-05-16 | **Phase 5** implemented: clock (chrono + chrono-tz, minute tick), keyboard (hyprland socket / xkb / static), poll loop replaces blocking_dispatch; xkb = separate feature |

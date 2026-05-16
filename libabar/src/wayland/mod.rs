@@ -1,7 +1,9 @@
-use std::fs::File;
-use std::io::Write;
-use std::os::unix::io::AsFd;
+use std::io::Read;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc;
 
+use rustix::event::{PollFd, PollFlags, poll};
 use tracing::{debug, warn};
 use wayland_client::protocol::wl_pointer::{Axis, ButtonState};
 use wayland_client::protocol::{
@@ -16,18 +18,32 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 use crate::error::AbarError;
 use crate::icon::IconCache;
 use crate::input::{self, PointerAction};
-use crate::layout::ComputedBar;
+use crate::layout::{ComputedBar, compute_bar};
 use crate::model::BarSpec;
-use crate::render::paint_bar;
+use crate::modules::{ModuleConfigs, ModuleUpdate};
+use crate::render::{FontContext, paint_computed};
 use crate::spawn;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 
-/// Blocks until the layer surface is closed or dispatch fails.
-pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
+/// Blocks until the layer surface is closed or an unrecoverable error occurs.
+pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     spawn::ensure_runtime()?;
+
+    let (updates_tx, updates_rx) = mpsc::sync_channel::<ModuleUpdate>(64);
+    let (wakeup_rx, wakeup_tx) = UnixStream::pair().map_err(|source| AbarError::Io {
+        path: "/dev/null".into(),
+        source,
+    })?;
+    wakeup_rx
+        .set_nonblocking(true)
+        .map_err(|source| AbarError::Io {
+            path: "/dev/null".into(),
+            source,
+        })?;
+
     let conn = Connection::connect_to_env()?;
     let display = conn.display();
     let mut event_queue = conn.new_event_queue();
@@ -48,20 +64,141 @@ pub fn run_bar(spec: BarSpec) -> Result<(), AbarError> {
         buffer: None,
         pool: None,
         pool_file: None,
+        bar_width: 1,
         bar_height: 1,
         computed: None,
         pointer: PointerState::default(),
         icon_cache: IconCache::new(),
+        font: None,
+        updates_tx: updates_tx.clone(),
+        updates_rx,
+        wakeup_rx,
     };
 
-    while state.running {
+    // Spawn clock background task.
+    #[cfg(feature = "clock")]
+    if let Some(clock_cfg) = modules.clock {
+        let tx = updates_tx.clone();
+        let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
+            path: "/dev/null".into(),
+            source,
+        })?;
+        spawn::ensure_runtime()?.spawn(clock_task(tx, wakeup, clock_cfg));
+    }
+
+    // Suppress unused-variable warning when no module features are active.
+    let _ = modules;
+    // All tasks that need the wakeup sender now hold their own clones; drop ours.
+    drop(wakeup_tx);
+
+    loop {
         event_queue
-            .blocking_dispatch(&mut state)
+            .flush()
+            .map_err(|e| AbarError::WaylandProtocol(format!("flush failed: {e}")))?;
+
+        event_queue
+            .dispatch_pending(&mut state)
             .map_err(|e| AbarError::WaylandProtocol(format!("dispatch failed: {e}")))?;
+
+        // Apply any module label updates that arrived since the last loop iteration.
+        while let Ok(update) = state.updates_rx.try_recv() {
+            if let Err(e) = state.apply_update(update, &qh) {
+                warn!(error = %e, "module update repaint failed");
+            }
+        }
+
+        if !state.running {
+            break;
+        }
+
+        // Flush any surface commits queued by apply_update before blocking in poll;
+        // without this the compositor would not see the updated buffer until the next
+        // Wayland event (e.g. pointer motion) triggered another flush.
+        event_queue
+            .flush()
+            .map_err(|e| AbarError::WaylandProtocol(format!("flush failed: {e}")))?;
+
+        // Acquire the Wayland read lock; if events are already pending just loop.
+        let Some(read_guard) = event_queue.prepare_read() else {
+            continue;
+        };
+
+        let wayland_fd = read_guard.connection_fd();
+        // Copy the raw fd so we can borrow it independently of `state`.
+        let wakeup_raw = state.wakeup_rx.as_raw_fd();
+
+        // Poll the Wayland connection and the wakeup pipe; None = wait indefinitely.
+        let mut pollfds = [
+            PollFd::from_borrowed_fd(wayland_fd, PollFlags::IN),
+            // SAFETY: wakeup_rx is alive and valid for the duration of this poll call.
+            PollFd::from_borrowed_fd(unsafe { BorrowedFd::borrow_raw(wakeup_raw) }, PollFlags::IN),
+        ];
+
+        match poll(&mut pollfds, None) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => {
+                drop(read_guard);
+                continue;
+            }
+            Err(e) => {
+                return Err(AbarError::WaylandProtocol(format!("poll: {e}")));
+            }
+        }
+
+        // Drain the wakeup pipe so it doesn't stay readable forever.
+        if pollfds[1].revents().contains(PollFlags::IN) {
+            let mut buf = [0u8; 64];
+            let _ = state.wakeup_rx.read(&mut buf);
+        }
+
+        if pollfds[0].revents().contains(PollFlags::IN) {
+            if let Err(e) = read_guard.read() {
+                return Err(AbarError::WaylandProtocol(format!(
+                    "read events failed: {e}"
+                )));
+            }
+        } else {
+            drop(read_guard);
+        }
     }
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Clock background task
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "clock")]
+async fn clock_task(
+    tx: mpsc::SyncSender<ModuleUpdate>,
+    mut wakeup: UnixStream,
+    config: crate::modules::clock::ClockConfig,
+) {
+    use std::io::Write;
+    use tokio::time::{Duration, sleep};
+
+    // Determine the active timezone (first in list, or local if empty).
+    let tz = config.timezones.first().copied();
+
+    loop {
+        let ms = crate::modules::clock::ms_until_next_tick();
+        sleep(Duration::from_millis(ms)).await;
+
+        let fmt = config.formats.first().map_or("%H:%M", |s| s.as_str());
+        let label = crate::modules::clock::current_label(fmt, tz);
+
+        let _ = tx.try_send(ModuleUpdate {
+            module_id: "clock".to_string(),
+            label,
+        });
+        let _ = wakeup.write_all(&[0u8]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AppState
+// ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct PointerState {
@@ -83,11 +220,17 @@ struct AppState {
     pending_configure: Option<(u32, u32, u32)>,
     buffer: Option<wl_buffer::WlBuffer>,
     pool: Option<wl_shm_pool::WlShmPool>,
-    pool_file: Option<File>,
+    pool_file: Option<std::fs::File>,
+    bar_width: u32,
     bar_height: u32,
     computed: Option<ComputedBar>,
     pointer: PointerState,
     icon_cache: IconCache,
+    font: Option<FontContext>,
+    #[allow(dead_code)]
+    updates_tx: mpsc::SyncSender<ModuleUpdate>,
+    updates_rx: mpsc::Receiver<ModuleUpdate>,
+    wakeup_rx: UnixStream,
 }
 
 impl AppState {
@@ -174,6 +317,37 @@ impl AppState {
         self.resize_and_paint(&shm, qh, w, h)
     }
 
+    /// Update a segment label and repaint. No-op if the bar hasn't been painted yet.
+    fn apply_update(
+        &mut self,
+        update: ModuleUpdate,
+        qh: &QueueHandle<Self>,
+    ) -> Result<(), AbarError> {
+        let found = self
+            .spec
+            .layout
+            .left
+            .iter_mut()
+            .chain(self.spec.layout.center.iter_mut())
+            .chain(self.spec.layout.right.iter_mut())
+            .flat_map(|island| island.segments.iter_mut())
+            .find(|seg| seg.module_id == update.module_id);
+
+        let Some(seg) = found else {
+            return Ok(());
+        };
+        seg.label = update.label;
+
+        // Only repaint once the layer surface has been configured and painted at least once.
+        if self.computed.is_none() {
+            return Ok(());
+        }
+        let Some(shm) = self.shm.clone() else {
+            return Ok(());
+        };
+        self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
+    }
+
     fn resize_and_paint(
         &mut self,
         shm: &wl_shm::WlShm,
@@ -181,17 +355,29 @@ impl AppState {
         width: u32,
         height: u32,
     ) -> Result<(), AbarError> {
-        let painted = paint_bar(&self.spec, width, &mut self.icon_cache)?;
-        self.bar_height = painted.frame.height;
-        self.computed = Some(painted.computed);
+        self.bar_width = width;
+
+        // Initialise the font context once; avoids fontconfig rescanning on every repaint.
+        if self.font.is_none() {
+            self.font = Some(FontContext::new(
+                &self.spec.style.font_name,
+                self.spec.style.font_size,
+            )?);
+        }
+        let font = self.font.as_ref().unwrap();
+
+        let computed = compute_bar(&self.spec, width, &|text| font.measure(text));
+        let frame = paint_computed(&self.spec, &computed, font, &mut self.icon_cache)?;
+        self.bar_height = frame.height;
+        self.computed = Some(computed);
 
         if let Some(ls) = self.layer_surface.as_ref() {
-            ls.set_exclusive_zone(painted.frame.height as i32);
-            ls.set_size(0, painted.frame.height);
+            ls.set_exclusive_zone(frame.height as i32);
+            ls.set_size(0, frame.height);
         }
 
-        let stride = painted.frame.stride;
-        let buf_h = painted.frame.height;
+        let stride = frame.stride;
+        let buf_h = frame.height;
         let size = (stride as u64)
             .checked_mul(buf_h as u64)
             .ok_or_else(|| AbarError::WaylandProtocol("buffer size overflow".into()))?;
@@ -205,7 +391,8 @@ impl AppState {
             source,
         })?;
 
-        file.write_all(&painted.frame.data)
+        use std::io::Write;
+        file.write_all(&frame.data)
             .map_err(|source| AbarError::Io {
                 path: std::path::PathBuf::from("/dev/shm"),
                 source,
@@ -242,6 +429,10 @@ impl AppState {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wayland dispatch implementations
+// ---------------------------------------------------------------------------
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
@@ -305,9 +496,10 @@ impl Dispatch<wl_seat::WlSeat, ()> for AppState {
         if let wl_seat::Event::Capabilities {
             capabilities: WEnum::Value(caps),
         } = event
-            && caps.contains(wl_seat::Capability::Pointer)
         {
-            state.bind_pointer(seat, qh);
+            if caps.contains(wl_seat::Capability::Pointer) {
+                state.bind_pointer(seat, qh);
+            }
         }
     }
 }
