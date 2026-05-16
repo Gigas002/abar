@@ -2,6 +2,8 @@ use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
+#[cfg(feature = "clock")]
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 use rustix::event::{PollFd, PollFlags, poll};
 use tracing::{debug, warn};
@@ -73,17 +75,26 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         updates_tx: updates_tx.clone(),
         updates_rx,
         wakeup_rx,
+        #[cfg(feature = "clock")]
+        clock_tz_index: Arc::new(AtomicUsize::new(0)),
+        #[cfg(feature = "clock")]
+        clock_timezones: Vec::new(),
+        #[cfg(feature = "clock")]
+        clock_formats: Vec::new(),
     };
 
     // Spawn clock background task.
     #[cfg(feature = "clock")]
     if let Some(clock_cfg) = modules.clock {
+        state.clock_timezones = clock_cfg.timezones.clone();
+        state.clock_formats = clock_cfg.formats.clone();
         let tx = updates_tx.clone();
         let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
             path: "/dev/null".into(),
             source,
         })?;
-        spawn::ensure_runtime()?.spawn(clock_task(tx, wakeup, clock_cfg));
+        let tz_index = state.clock_tz_index.clone();
+        spawn::ensure_runtime()?.spawn(clock_task(tx, wakeup, clock_cfg, tz_index));
     }
 
     // Suppress unused-variable warning when no module features are active.
@@ -174,17 +185,17 @@ async fn clock_task(
     tx: mpsc::SyncSender<ModuleUpdate>,
     mut wakeup: UnixStream,
     config: crate::modules::clock::ClockConfig,
+    tz_index: Arc<AtomicUsize>,
 ) {
     use std::io::Write;
     use tokio::time::{Duration, sleep};
-
-    // Determine the active timezone (first in list, or local if empty).
-    let tz = config.timezones.first().copied();
 
     loop {
         let ms = crate::modules::clock::ms_until_next_tick();
         sleep(Duration::from_millis(ms)).await;
 
+        let idx = tz_index.load(Ordering::Relaxed);
+        let tz = config.timezones.get(idx).copied();
         let fmt = config.formats.first().map_or("%H:%M", |s| s.as_str());
         let label = crate::modules::clock::current_label(fmt, tz);
 
@@ -206,6 +217,9 @@ struct PointerState {
     on_surface: bool,
     x: f64,
     y: f64,
+    // Set when an Axis event fires; cleared on Frame. Prevents the paired
+    // AxisDiscrete (which arrives after Axis) from double-counting the click.
+    had_axis: bool,
 }
 
 struct AppState {
@@ -231,6 +245,12 @@ struct AppState {
     updates_tx: mpsc::SyncSender<ModuleUpdate>,
     updates_rx: mpsc::Receiver<ModuleUpdate>,
     wakeup_rx: UnixStream,
+    #[cfg(feature = "clock")]
+    clock_tz_index: Arc<AtomicUsize>,
+    #[cfg(feature = "clock")]
+    clock_timezones: Vec<chrono_tz::Tz>,
+    #[cfg(feature = "clock")]
+    clock_formats: Vec<String>,
 }
 
 impl AppState {
@@ -270,14 +290,48 @@ impl AppState {
         debug!("pointer bound");
     }
 
-    fn dispatch_pointer_action(&self, action: PointerAction) {
-        let Some(computed) = self.computed.as_ref() else {
-            return;
-        };
-        if !self.pointer.on_surface {
+    fn dispatch_pointer_action(&mut self, action: PointerAction, qh: &QueueHandle<Self>) {
+        if !self.pointer.on_surface || self.computed.is_none() {
             return;
         }
-        input::dispatch_pointer_action(computed, self.pointer.x, self.pointer.y, action);
+        let x = self.pointer.x;
+        let y = self.pointer.y;
+
+        #[cfg(feature = "clock")]
+        if matches!(action, PointerAction::ScrollUp | PointerAction::ScrollDown)
+            && self.clock_timezones.len() > 1
+        {
+            let clock_hit = {
+                let computed = self.computed.as_ref().unwrap();
+                crate::hit_test::hit_test(computed, x, y)
+                    .map_or(false, |s| s.module_id == "clock")
+            };
+            if clock_hit {
+                let n = self.clock_timezones.len();
+                let cur = self.clock_tz_index.load(Ordering::Relaxed);
+                let next = if action == PointerAction::ScrollUp {
+                    cur.checked_sub(1).unwrap_or(n - 1)
+                } else {
+                    (cur + 1) % n
+                };
+                self.clock_tz_index.store(next, Ordering::Relaxed);
+                let label = {
+                    let tz = self.clock_timezones[next];
+                    let fmt = self.clock_formats.first().map_or("%H:%M", |s| s.as_str());
+                    crate::modules::clock::current_label(fmt, Some(tz))
+                };
+                if let Err(e) = self.apply_update(
+                    ModuleUpdate { module_id: "clock".to_string(), label },
+                    qh,
+                ) {
+                    warn!(error = %e, "clock tz update repaint failed");
+                }
+                return;
+            }
+        }
+
+        let computed = self.computed.as_ref().unwrap();
+        input::dispatch_pointer_action(computed, x, y, action);
     }
 
     fn on_configure(
@@ -511,7 +565,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
         event: wl_pointer::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         match event {
             wl_pointer::Event::Enter { surface, .. } => {
@@ -546,10 +600,26 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                     _ => None,
                 };
                 if let Some(action) = action {
-                    state.dispatch_pointer_action(action);
+                    state.dispatch_pointer_action(action, qh);
                 }
             }
+            wl_pointer::Event::Axis { axis, value, .. } => {
+                if axis != WEnum::Value(Axis::VerticalScroll) || value == 0.0 {
+                    return;
+                }
+                state.pointer.had_axis = true;
+                let action = if value < 0.0 {
+                    PointerAction::ScrollUp
+                } else {
+                    PointerAction::ScrollDown
+                };
+                state.dispatch_pointer_action(action, qh);
+            }
             wl_pointer::Event::AxisDiscrete { axis, discrete, .. } => {
+                // Axis already handled this frame (Axis arrives before AxisDiscrete).
+                if state.pointer.had_axis {
+                    return;
+                }
                 if axis != WEnum::Value(Axis::VerticalScroll) || discrete == 0 {
                     return;
                 }
@@ -558,18 +628,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 } else {
                     PointerAction::ScrollDown
                 };
-                state.dispatch_pointer_action(action);
+                state.dispatch_pointer_action(action, qh);
             }
-            wl_pointer::Event::Axis { axis, value, .. } => {
-                if axis != WEnum::Value(Axis::VerticalScroll) || value == 0.0 {
-                    return;
-                }
-                let action = if value < 0.0 {
-                    PointerAction::ScrollUp
-                } else {
-                    PointerAction::ScrollDown
-                };
-                state.dispatch_pointer_action(action);
+            wl_pointer::Event::Frame => {
+                state.pointer.had_axis = false;
             }
             _ => {}
         }
