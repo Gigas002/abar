@@ -146,7 +146,12 @@ fn place_island(
     style: &BarStyle,
     segments: &[Segment],
 ) -> PlacedIsland {
-    let mut seg_x = x + style.island_padding_x;
+    // Derive pad_x from the actual measured width so placement always matches measurement,
+    // regardless of whether the island uses text or icon padding.
+    let gaps = style.segment_gap * metric.segment_widths.len().saturating_sub(1) as f64;
+    let inner_w: f64 = metric.segment_widths.iter().sum::<f64>() + gaps;
+    let pad_x = (metric.width - inner_w) / 2.0;
+    let mut seg_x = x + pad_x;
     let inner_h = metric.height - 2.0 * style.island_padding_y;
     let seg_y = y + style.island_padding_y;
 
@@ -237,14 +242,33 @@ fn measure_island(
     style: &BarStyle,
     measure: &impl Fn(&str, bool) -> (f64, f64),
 ) -> IslandMetrics {
+    // Icon-only islands use the measured text line-height so all islands share the same bar
+    // height, and derive their x-padding to make the island square (width == height).
+    let all_icon = !island.segments.is_empty()
+        && island
+            .segments
+            .iter()
+            .all(|s| s.display_mode == DisplayMode::IconOnly);
+    let icon_h = if all_icon {
+        measure(" ", false).1
+    } else {
+        style.font_size
+    };
+    // pad_x chosen so that a single-icon island is square: font_size + 2*pad_x == island_height.
+    // island_height = icon_h + 2*island_padding_y, so pad_x = (icon_h - font_size)/2 + island_padding_y.
+    let pad_x = if all_icon {
+        (icon_h - style.font_size) / 2.0 + style.island_padding_y
+    } else {
+        style.island_padding_x
+    };
+
     let mut max_h = 0.0_f64;
     let mut segment_widths = Vec::with_capacity(island.segments.len());
 
     for seg in &island.segments {
         let (w, h) = match seg.display_mode {
             DisplayMode::TextOnly => measure(&seg.label, seg.use_markup),
-            // Icon segments occupy a 1× em box (square).
-            DisplayMode::IconOnly => (style.font_size, style.font_size),
+            DisplayMode::IconOnly => (style.font_size, icon_h),
         };
         max_h = max_h.max(h);
         segment_widths.push(w);
@@ -259,7 +283,7 @@ fn measure_island(
     let inner_w: f64 = segment_widths.iter().sum::<f64>() + gaps;
 
     IslandMetrics {
-        width: inner_w + 2.0 * style.island_padding_x,
+        width: inner_w + 2.0 * pad_x,
         height: max_h + 2.0 * style.island_padding_y,
         segment_widths,
     }
