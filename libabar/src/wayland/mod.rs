@@ -4,6 +4,8 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
 #[cfg(feature = "clock")]
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+#[cfg(feature = "keyboard")]
+use wayland_client::protocol::wl_keyboard::{self, KeymapFormat};
 
 use rustix::event::{PollFd, PollFlags, poll};
 use tracing::{debug, warn};
@@ -70,6 +72,8 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         bar_height: 1,
         computed: None,
         pointer: PointerState::default(),
+        #[cfg(feature = "keyboard")]
+        kb: KeyboardWlState::default(),
         icon_cache: IconCache::new(),
         font: None,
         updates_tx: updates_tx.clone(),
@@ -95,6 +99,12 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         })?;
         let tz_index = state.clock_tz_index.clone();
         spawn::ensure_runtime()?.spawn(clock_task(tx, wakeup, clock_cfg, tz_index));
+    }
+
+    // Load keyboard fallback labels; real layout names arrive via wl_keyboard.keymap.
+    #[cfg(feature = "keyboard")]
+    if let Some(kb_cfg) = modules.keyboard {
+        state.kb.config_layouts = kb_cfg.layouts;
     }
 
     // Suppress unused-variable warning when no module features are active.
@@ -211,6 +221,29 @@ async fn clock_task(
 // AppState
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "keyboard")]
+#[derive(Default)]
+struct KeyboardWlState {
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// Layout names extracted from the compositor's XKB keymap.
+    xkb_layouts: Vec<String>,
+    /// Currently active XKB group index (updated on modifiers events, requires focus).
+    active_group: u32,
+    /// Fallback labels from config, used until the keymap arrives.
+    config_layouts: Vec<String>,
+}
+
+#[cfg(feature = "keyboard")]
+impl KeyboardWlState {
+    fn current_label(&self) -> String {
+        crate::modules::keyboard::current_label(
+            &self.xkb_layouts,
+            &self.config_layouts,
+            self.active_group,
+        )
+    }
+}
+
 #[derive(Default)]
 struct PointerState {
     pointer: Option<wl_pointer::WlPointer>,
@@ -239,6 +272,8 @@ struct AppState {
     bar_height: u32,
     computed: Option<ComputedBar>,
     pointer: PointerState,
+    #[cfg(feature = "keyboard")]
+    kb: KeyboardWlState,
     icon_cache: IconCache,
     font: Option<FontContext>,
     #[allow(dead_code)]
@@ -290,7 +325,17 @@ impl AppState {
         debug!("pointer bound");
     }
 
-    fn dispatch_pointer_action(&mut self, action: PointerAction, qh: &QueueHandle<Self>) {
+    #[cfg(feature = "keyboard")]
+    fn bind_keyboard(&mut self, seat: &wl_seat::WlSeat, qh: &QueueHandle<Self>) {
+        if self.kb.keyboard.is_some() {
+            return;
+        }
+        let kb = seat.get_keyboard(qh, ());
+        self.kb.keyboard = Some(kb);
+        debug!("keyboard bound");
+    }
+
+    fn dispatch_pointer_action(&mut self, action: PointerAction, _qh: &QueueHandle<Self>) {
         if !self.pointer.on_surface || self.computed.is_none() {
             return;
         }
@@ -304,7 +349,7 @@ impl AppState {
             let clock_hit = {
                 let computed = self.computed.as_ref().unwrap();
                 crate::hit_test::hit_test(computed, x, y)
-                    .map_or(false, |s| s.module_id == "clock")
+                    .is_some_and(|s| s.module_id == "clock")
             };
             if clock_hit {
                 let n = self.clock_timezones.len();
@@ -322,7 +367,7 @@ impl AppState {
                 };
                 if let Err(e) = self.apply_update(
                     ModuleUpdate { module_id: "clock".to_string(), label },
-                    qh,
+                    _qh,
                 ) {
                     warn!(error = %e, "clock tz update repaint failed");
                 }
@@ -547,13 +592,18 @@ impl Dispatch<wl_seat::WlSeat, ()> for AppState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities {
+        let wl_seat::Event::Capabilities {
             capabilities: WEnum::Value(caps),
         } = event
-        {
-            if caps.contains(wl_seat::Capability::Pointer) {
-                state.bind_pointer(seat, qh);
-            }
+        else {
+            return;
+        };
+        if caps.contains(wl_seat::Capability::Pointer) {
+            state.bind_pointer(seat, qh);
+        }
+        #[cfg(feature = "keyboard")]
+        if caps.contains(wl_seat::Capability::Keyboard) {
+            state.bind_keyboard(seat, qh);
         }
     }
 }
@@ -661,6 +711,59 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for AppState {
             zwlr_layer_surface_v1::Event::Closed => {
                 debug!("layer surface closed");
                 state.running = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "keyboard")]
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Keymap { format, fd, size } => {
+                if format != WEnum::Value(KeymapFormat::XkbV1) {
+                    return;
+                }
+                let mut file = std::fs::File::from(fd);
+                let mut buf = vec![0u8; size as usize];
+                if file.read_exact(&mut buf).is_err() {
+                    return;
+                }
+                // Strip null terminator present in XKB keymap strings.
+                while buf.last() == Some(&0) {
+                    buf.pop();
+                }
+                let Ok(keymap_str) = String::from_utf8(buf) else {
+                    return;
+                };
+                state.kb.xkb_layouts =
+                    crate::modules::keyboard::parse_layout_names(&keymap_str);
+                let label = state.kb.current_label();
+                if let Err(e) = state.apply_update(
+                    ModuleUpdate { module_id: "keyboard".into(), label },
+                    qh,
+                ) {
+                    warn!(error = %e, "keyboard keymap repaint failed");
+                }
+            }
+            wl_keyboard::Event::Modifiers { group, .. } => {
+                // Only received when the bar surface has keyboard focus.
+                state.kb.active_group = group;
+                let label = state.kb.current_label();
+                if let Err(e) = state.apply_update(
+                    ModuleUpdate { module_id: "keyboard".into(), label },
+                    qh,
+                ) {
+                    warn!(error = %e, "keyboard modifiers repaint failed");
+                }
             }
             _ => {}
         }

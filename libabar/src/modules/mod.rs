@@ -9,7 +9,11 @@ pub struct ModuleUpdate {
 pub struct ModuleConfigs {
     #[cfg(feature = "clock")]
     pub clock: Option<clock::ClockConfig>,
+    #[cfg(feature = "keyboard")]
+    pub keyboard: Option<keyboard::KeyboardConfig>,
 }
 
 #[cfg(feature = "clock")]
 pub mod clock;
+#[cfg(feature = "keyboard")]
+pub mod keyboard;

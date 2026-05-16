@@ -79,13 +79,9 @@ impl Settings {
 /// so the bar shows real data immediately on the first paint.
 fn build_module_configs(_config: &Config, _layout: &mut BarLayout) -> ModuleConfigs {
     #[cfg(feature = "clock")]
-    let config = _config;
-    #[cfg(feature = "clock")]
-    let layout = _layout;
-    #[cfg(feature = "clock")]
     let clock = {
         use libabar::modules::clock::{ClockConfig, parse_tz};
-        config.clock.as_ref().map(|c| {
+        _config.clock.as_ref().map(|c| {
             let formats = c
                 .formats
                 .clone()
@@ -103,19 +99,34 @@ fn build_module_configs(_config: &Config, _layout: &mut BarLayout) -> ModuleConf
             let fmt = cfg.formats.first().map_or("%H:%M", |s| s.as_str());
             let tz = cfg.timezones.first().copied();
             let initial = libabar::modules::clock::current_label(fmt, tz);
-            set_segment_label(layout, "clock", &initial);
+            set_segment_label(_layout, "clock", &initial);
 
             cfg
+        })
+    };
+
+    #[cfg(feature = "keyboard")]
+    let keyboard = {
+        use libabar::modules::keyboard::KeyboardConfig;
+        _config.keyboard.as_ref().map(|k| {
+            let layouts = k.layouts.clone().unwrap_or_default();
+            // Prime the segment with the first configured layout so it's never blank.
+            if let Some(first) = layouts.first() {
+                set_segment_label(_layout, "keyboard", first);
+            }
+            KeyboardConfig { layouts }
         })
     };
 
     ModuleConfigs {
         #[cfg(feature = "clock")]
         clock,
+        #[cfg(feature = "keyboard")]
+        keyboard,
     }
 }
 
-#[cfg(feature = "clock")]
+#[cfg(any(feature = "clock", feature = "keyboard"))]
 fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
     for island in layout
         .left
