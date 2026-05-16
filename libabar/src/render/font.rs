@@ -22,6 +22,9 @@ impl FontContext {
 
     pub fn measure(&self, text: &str) -> (f64, f64) {
         self.layout.set_text(text);
+        // set_text does not reset attributes left by a previous set_markup call; clear them
+        // explicitly so color spans from markup segments don't bleed into plain-text segments.
+        self.layout.set_attributes(None);
         let (w, h) = self.layout.size();
         (
             f64::from(w) / f64::from(pango::SCALE),
