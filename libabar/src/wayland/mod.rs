@@ -2,8 +2,12 @@ use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
+#[cfg(any(feature = "clock", feature = "keyboard"))]
+use std::sync::Arc;
 #[cfg(feature = "clock")]
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "keyboard")]
+use std::sync::RwLock;
 #[cfg(feature = "keyboard")]
 use wayland_client::protocol::wl_keyboard::{self, KeymapFormat};
 
@@ -105,6 +109,36 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     #[cfg(feature = "keyboard")]
     if let Some(kb_cfg) = modules.keyboard {
         state.kb.config_layouts = kb_cfg.layouts;
+    }
+
+    // Spawn a Hyprland event socket listener when both features are active.
+    // Delivers real-time layout names without requiring keyboard focus on the bar.
+    #[cfg(all(feature = "keyboard", feature = "hyprland"))]
+    {
+        let has_keyboard = state
+            .spec
+            .layout
+            .left
+            .iter()
+            .chain(state.spec.layout.center.iter())
+            .chain(state.spec.layout.right.iter())
+            .flat_map(|island| island.segments.iter())
+            .any(|seg| seg.module_id == "keyboard");
+        if has_keyboard {
+            let tx = updates_tx.clone();
+            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
+                path: "/dev/null".into(),
+                source,
+            })?;
+            let xkb_layouts = Arc::clone(&state.kb.xkb_layouts);
+            let config_layouts = state.kb.config_layouts.clone();
+            spawn::ensure_runtime()?.spawn(hyprland_keyboard_task(
+                tx,
+                wakeup,
+                xkb_layouts,
+                config_layouts,
+            ));
+        }
     }
 
     // Suppress unused-variable warning when no module features are active.
@@ -218,6 +252,67 @@ async fn clock_task(
 }
 
 // ---------------------------------------------------------------------------
+// Hyprland keyboard background task
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "keyboard", feature = "hyprland"))]
+async fn hyprland_keyboard_task(
+    tx: mpsc::SyncSender<ModuleUpdate>,
+    wakeup: UnixStream,
+    xkb_layouts: Arc<RwLock<Vec<String>>>,
+    config_layouts: Vec<String>,
+) {
+    use std::io::Write;
+    use std::sync::Mutex;
+    use hyprland::event_listener::{AsyncEventListener, LayoutEvent};
+
+    let tx = Arc::new(tx);
+    let wakeup = Arc::new(Mutex::new(wakeup));
+    let config_layouts = Arc::new(config_layouts);
+
+    let mut listener = AsyncEventListener::new();
+
+    let tx_c = Arc::clone(&tx);
+    let wakeup_c = Arc::clone(&wakeup);
+    let xkb_c = Arc::clone(&xkb_layouts);
+    let cfg_c = Arc::clone(&config_layouts);
+    listener.add_layout_changed_handler(move |data: LayoutEvent| {
+        let tx = Arc::clone(&tx_c);
+        let wakeup = Arc::clone(&wakeup_c);
+        let xkb = Arc::clone(&xkb_c);
+        let cfg = Arc::clone(&cfg_c);
+        Box::pin(async move {
+            // Map Hyprland's layout name to a group index via the parsed xkb names,
+            // then pick the user's config label for that group.
+            let label = {
+                let xkb = xkb.read().unwrap();
+                let idx = xkb.iter().position(|n| n == &data.layout_name);
+                match idx {
+                    Some(i) => crate::modules::keyboard::current_label(&xkb, &cfg, i as u32),
+                    None => {
+                        tracing::warn!(
+                            hyprland_name = %data.layout_name,
+                            xkb_layouts = ?*xkb,
+                            "keyboard layout not found in XKB names; using raw Hyprland name"
+                        );
+                        data.layout_name.clone()
+                    }
+                }
+            };
+            let _ = tx.try_send(ModuleUpdate {
+                module_id: "keyboard".into(),
+                label,
+            });
+            let _ = wakeup.lock().unwrap().write_all(&[0u8]);
+        })
+    });
+
+    if let Err(e) = listener.start_listener_async().await {
+        tracing::warn!(error = %e, "hyprland keyboard listener stopped");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
 
@@ -226,21 +321,19 @@ async fn clock_task(
 struct KeyboardWlState {
     keyboard: Option<wl_keyboard::WlKeyboard>,
     /// Layout names extracted from the compositor's XKB keymap.
-    xkb_layouts: Vec<String>,
+    /// Shared with the Hyprland task so it can map layout names to group indices.
+    xkb_layouts: Arc<RwLock<Vec<String>>>,
     /// Currently active XKB group index (updated on modifiers events, requires focus).
     active_group: u32,
-    /// Fallback labels from config, used until the keymap arrives.
+    /// Display labels from config (`[keyboard].layouts`); index matches XKB group order.
     config_layouts: Vec<String>,
 }
 
 #[cfg(feature = "keyboard")]
 impl KeyboardWlState {
     fn current_label(&self) -> String {
-        crate::modules::keyboard::current_label(
-            &self.xkb_layouts,
-            &self.config_layouts,
-            self.active_group,
-        )
+        let xkb = self.xkb_layouts.read().unwrap();
+        crate::modules::keyboard::current_label(&xkb, &self.config_layouts, self.active_group)
     }
 }
 
@@ -732,20 +825,26 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
                 if format != WEnum::Value(KeymapFormat::XkbV1) {
                     return;
                 }
-                let mut file = std::fs::File::from(fd);
-                let mut buf = vec![0u8; size as usize];
-                if file.read_exact(&mut buf).is_err() {
-                    return;
-                }
-                // Strip null terminator present in XKB keymap strings.
-                while buf.last() == Some(&0) {
-                    buf.pop();
-                }
-                let Ok(keymap_str) = String::from_utf8(buf) else {
+                // Use libxkbcommon directly: new_from_fd mmaps the FD so the
+                // file-position issue (compositor sends FD at EOF) is irrelevant.
+                use xkbcommon::xkb;
+                let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+                // SAFETY: fd is a valid owned memfd from the compositor, live for this call.
+                let Ok(Some(km)) = (unsafe {
+                    xkb::Keymap::new_from_fd(
+                        &ctx,
+                        fd,
+                        size as usize,
+                        xkb::KEYMAP_FORMAT_TEXT_V1,
+                        xkb::KEYMAP_COMPILE_NO_FLAGS,
+                    )
+                }) else {
                     return;
                 };
-                state.kb.xkb_layouts =
-                    crate::modules::keyboard::parse_layout_names(&keymap_str);
+                let layouts: Vec<String> =
+                    (0..km.num_layouts()).map(|i| km.layout_get_name(i).to_string()).collect();
+                debug!(xkb_layouts = ?layouts, "parsed XKB keyboard layout names");
+                *state.kb.xkb_layouts.write().unwrap() = layouts;
                 let label = state.kb.current_label();
                 if let Err(e) = state.apply_update(
                     ModuleUpdate { module_id: "keyboard".into(), label },

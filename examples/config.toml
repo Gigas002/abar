@@ -61,14 +61,14 @@ right = [
 
 [keyboard]
 layouts = ["en-US", "ru-RU"]
-# on_left_click: switch layout <- built-in functionality, overridable by the user
+on_left_click = "hyprctl switchxkblayout all next"
 
 [clock]
 formats = [
     # 21:35 28.03.2026
     "%R %Z %d.%m.%Y",
 ]
-# on_scroll_up / on_scroll_down: cycle through timezones <- built-in behavior, overridable by the user
+# on_scroll_up / on_scroll_down: cycle through timezones
 timezones = ["Asia/Tokyo", "Europe/Moscow"]
 # launch calendar app on left click
 on_left_click = "rusti-cal"

@@ -1,19 +1,8 @@
 use super::*;
 
-const FIXTURE_TWO_LAYOUTS: &str = r#"
-xkb_keymap {
-xkb_symbols "pc+us+ru(phonetic):2" {
-    name[Group1]="English (US)";
-    name[Group2]="Russian (Phonetic)";
-};
-};
-"#;
-
-#[test]
-fn parse_two_layouts() {
-    let names = parse_layout_names(FIXTURE_TWO_LAYOUTS);
-    assert_eq!(names, vec!["English (US)", "Russian (Phonetic)"]);
-}
+// ---------------------------------------------------------------------------
+// parse_layout_names — tested against real keymaps produced by libxkbcommon
+// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_empty_keymap() {
@@ -21,34 +10,53 @@ fn parse_empty_keymap() {
 }
 
 #[test]
-fn parse_single_layout() {
-    let keymap = r#"    name[Group1]="us";"#;
-    let names = parse_layout_names(keymap);
-    assert_eq!(names, vec!["us"]);
+fn parse_single_layout_us() {
+    use xkbcommon::xkb;
+    let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let Some(km) =
+        xkb::Keymap::new_from_names(&ctx, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+    else {
+        return; // skip if xkb data not available in the test environment
+    };
+    let names = parse_layout_names(&km.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+    assert_eq!(names.len(), 1);
+    assert!(!names[0].is_empty());
 }
 
 #[test]
-fn parse_ignores_unrelated_lines() {
-    let keymap = "xkb_symbols {\n    key <A> { ... };\n    name[Group1]=\"de\";\n};\n";
-    assert_eq!(parse_layout_names(keymap), vec!["de"]);
+fn parse_two_layouts_us_ru() {
+    use xkbcommon::xkb;
+    let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let Some(km) =
+        xkb::Keymap::new_from_names(&ctx, "", "", "us,ru", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+    else {
+        return;
+    };
+    let names = parse_layout_names(&km.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+    assert_eq!(names.len(), 2);
+    assert!(!names[0].is_empty());
+    assert!(!names[1].is_empty());
 }
 
-#[test]
-fn parse_out_of_order_groups() {
-    // Should still return in group-number order regardless of line order.
-    let keymap = "    name[Group2]=\"ru\";\n    name[Group1]=\"us\";\n";
-    assert_eq!(parse_layout_names(keymap), vec!["us", "ru"]);
-}
+// ---------------------------------------------------------------------------
+// current_label — pure logic, no compositor needed
+// ---------------------------------------------------------------------------
 
 #[test]
-fn current_label_prefers_xkb_over_config() {
+fn current_label_prefers_config_over_xkb() {
     let xkb = vec!["English (US)".to_string(), "Russian".to_string()];
     let config = vec!["en".to_string(), "ru".to_string()];
-    assert_eq!(current_label(&xkb, &config, 1), "Russian");
+    assert_eq!(current_label(&xkb, &config, 1), "ru");
 }
 
 #[test]
-fn current_label_falls_back_to_config() {
+fn current_label_falls_back_to_xkb_when_config_empty() {
+    let xkb = vec!["English (US)".to_string()];
+    assert_eq!(current_label(&xkb, &[], 0), "English (US)");
+}
+
+#[test]
+fn current_label_falls_back_to_config_when_xkb_empty() {
     let config = vec!["en-US".to_string()];
     assert_eq!(current_label(&[], &config, 0), "en-US");
 }

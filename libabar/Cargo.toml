@@ -11,7 +11,7 @@ description = "Wayland layer-shell bar runtime."
 [features]
 default = []
 clock = ["dep:chrono-tz"]
-keyboard = []
+keyboard = ["dep:xkbcommon"]
 tray = []
 workspaces = ["hyprland"]
 window = ["hyprland"]
@@ -35,3 +35,4 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 tempfile = "3"
 hyprland = { git = "https://github.com/hyprland-community/hyprland-rs", optional = true, features = ["tokio"] }
 resvg = { version = "0.47", optional = true }
+xkbcommon = { version = "0.9", optional = true }

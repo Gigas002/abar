@@ -5,47 +5,33 @@ pub struct KeyboardConfig {
     pub layouts: Vec<String>,
 }
 
-/// Extract layout names from an XKB keymap string.
+/// Extract layout names from an XKB keymap string using libxkbcommon.
 ///
-/// Scans for `name[GroupN] = "…";` lines inside the `xkb_symbols` section.
-/// Returns names sorted by group number (Group1 first).
+/// Returns one name per layout group, in group order.
 pub fn parse_layout_names(keymap: &str) -> Vec<String> {
-    let mut layouts: Vec<(usize, String)> = Vec::new();
-
-    for line in keymap.lines() {
-        let t = line.trim();
-        let Some(rest) = t.strip_prefix("name[Group") else {
-            continue;
-        };
-        let Some(bracket) = rest.find(']') else {
-            continue;
-        };
-        let Ok(group_num) = rest[..bracket].parse::<usize>() else {
-            continue;
-        };
-        let Some(q_start) = rest.find('"') else {
-            continue;
-        };
-        let after_q = &rest[q_start + 1..];
-        let Some(q_end) = after_q.find('"') else {
-            continue;
-        };
-        layouts.push((group_num, after_q[..q_end].to_string()));
-    }
-
-    layouts.sort_by_key(|(n, _)| *n);
-    layouts.into_iter().map(|(_, name)| name).collect()
+    use xkbcommon::xkb;
+    let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let Some(km) = xkb::Keymap::new_from_string(
+        &ctx,
+        keymap.to_string(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    ) else {
+        return Vec::new();
+    };
+    (0..km.num_layouts()).map(|i| km.layout_get_name(i).to_string()).collect()
 }
 
 /// Return the display label for the given layout group index.
 ///
-/// Prefers `xkb_layouts` (parsed from the compositor keymap) over `config_layouts`
-/// (static fallback from config). Falls back to `"?"` when both slices are exhausted.
+/// Config labels take priority: if the user configured `layouts = [...]`, those are shown.
+/// Falls back to `xkb_layouts` (parsed from the compositor keymap) when config is absent,
+/// and to `"?"` when both slices are exhausted.
 pub fn current_label(xkb_layouts: &[String], config_layouts: &[String], group: u32) -> String {
-    let layouts = if !xkb_layouts.is_empty() {
-        xkb_layouts
-    } else {
+    let layouts = if !config_layouts.is_empty() {
         config_layouts
+    } else {
+        xkb_layouts
     };
     layouts
         .get(group as usize)
