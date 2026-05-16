@@ -17,6 +17,8 @@ pub struct Theme {
 pub struct Base {
     pub background_color: Option<String>,
     pub foreground_color: Option<String>,
+    pub hover_background_color: Option<String>,
+    pub active_background_color: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -31,6 +33,8 @@ impl Default for Base {
         Self {
             background_color: Some("#000000FF".to_string()),
             foreground_color: Some("#FFFFFFFF".to_string()),
+            hover_background_color: None,
+            active_background_color: None,
         }
     }
 }

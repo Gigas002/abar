@@ -99,10 +99,14 @@ pub struct BarLayout {
 }
 
 /// Colors in **BGRA** byte order for `WL_SHM_FORMAT_ARGB8888` buffers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BarColors {
     pub background: [u8; 4],
     pub foreground: [u8; 4],
+    /// Island background when the pointer is hovering over it.
+    pub hover_background: Option<[u8; 4]>,
+    /// Island background while a pointer button is held down on it.
+    pub active_background: Option<[u8; 4]>,
 }
 
 /// Spacing and typography for layout and paint.

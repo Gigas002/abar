@@ -53,11 +53,24 @@ impl Settings {
         // Build module configs and set live initial labels on the matching segments.
         let module_configs = build_module_configs(&config, &theme, &mut layout);
 
+        let hover_background = theme_base
+            .hover_background_color
+            .as_deref()
+            .map(parse_hex_rgba_to_bgra)
+            .transpose()?;
+        let active_background = theme_base
+            .active_background_color
+            .as_deref()
+            .map(parse_hex_rgba_to_bgra)
+            .transpose()?;
+
         Ok(Self {
             bar: BarSpec::new(
                 BarColors {
                     background: parse_hex_rgba_to_bgra(&background)?,
                     foreground: parse_hex_rgba_to_bgra(&foreground)?,
+                    hover_background,
+                    active_background,
                 },
                 BarStyle {
                     font_name,

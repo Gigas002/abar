@@ -555,6 +555,10 @@ struct PointerState {
     // Set when an Axis event fires; cleared on Frame. Prevents the paired
     // AxisDiscrete (which arrives after Axis) from double-counting the click.
     had_axis: bool,
+    /// Index into `ComputedBar::islands` of the island currently under the pointer.
+    hovered_island: Option<usize>,
+    /// Index into `ComputedBar::islands` of the island being pressed.
+    pressed_island: Option<usize>,
 }
 
 struct AppState {
@@ -639,6 +643,37 @@ impl AppState {
         debug!("keyboard bound");
     }
 
+    /// Recompute hovered island from current pointer position and repaint if it changed.
+    fn update_hover(&mut self, qh: &QueueHandle<Self>) {
+        let x = self.pointer.x;
+        let y = self.pointer.y;
+        let new_hover = self
+            .computed
+            .as_ref()
+            .and_then(|c| crate::hit_test::island_index_at(c, x, y));
+        if new_hover != self.pointer.hovered_island {
+            self.pointer.hovered_island = new_hover;
+            if let Some(shm) = self.shm.clone()
+                && let Err(e) = self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
+            {
+                warn!(error = %e, "hover repaint failed");
+            }
+        }
+    }
+
+    /// Clear hover and pressed state on pointer leave, repaint if needed.
+    fn clear_interaction(&mut self, qh: &QueueHandle<Self>) {
+        let had = self.pointer.hovered_island.is_some() || self.pointer.pressed_island.is_some();
+        self.pointer.hovered_island = None;
+        self.pointer.pressed_island = None;
+        if had
+            && let Some(shm) = self.shm.clone()
+            && let Err(e) = self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
+        {
+            warn!(error = %e, "leave repaint failed");
+        }
+    }
+
     fn dispatch_pointer_action(&mut self, action: PointerAction, _qh: &QueueHandle<Self>) {
         if !self.pointer.on_surface || self.computed.is_none() {
             return;
@@ -699,10 +734,10 @@ impl AppState {
                         &state,
                         use_markup,
                         &|text| font.measure(text),
-                    ) {
-                        if let Err(e) = hyprland_switch_workspace(id) {
-                            warn!(error = %e, workspace = id, "failed to switch workspace");
-                        }
+                    )
+                        && let Err(e) = hyprland_switch_workspace(id)
+                    {
+                        warn!(error = %e, workspace = id, "failed to switch workspace");
                     }
                 }
                 return;
@@ -806,7 +841,14 @@ impl AppState {
                 font.measure(text)
             }
         });
-        let frame = paint_computed(&self.spec, &computed, font, &mut self.icon_cache)?;
+        let frame = paint_computed(
+            &self.spec,
+            &computed,
+            font,
+            &mut self.icon_cache,
+            self.pointer.hovered_island,
+            self.pointer.pressed_island,
+        )?;
         self.bar_height = frame.height;
         self.computed = Some(computed);
 
@@ -966,6 +1008,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 if state.surface.as_ref().is_some_and(|ours| &surface == ours) =>
             {
                 state.pointer.on_surface = false;
+                state.clear_interaction(qh);
             }
             wl_pointer::Event::Motion {
                 surface_x,
@@ -974,23 +1017,48 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
             } => {
                 state.pointer.x = surface_x;
                 state.pointer.y = surface_y;
+                state.update_hover(qh);
             }
             wl_pointer::Event::Button {
                 button,
                 state: btn_state,
                 ..
             } => {
-                if btn_state != WEnum::Value(ButtonState::Pressed) {
-                    return;
-                }
-                let action = match button {
-                    BTN_LEFT => Some(PointerAction::LeftClick),
-                    BTN_RIGHT => Some(PointerAction::RightClick),
-                    BTN_MIDDLE => Some(PointerAction::MiddleClick),
-                    _ => None,
-                };
-                if let Some(action) = action {
-                    state.dispatch_pointer_action(action, qh);
+                if btn_state == WEnum::Value(ButtonState::Pressed) {
+                    state.pointer.pressed_island = state.pointer.hovered_island;
+                    if let Some(shm) = state.shm.clone()
+                        && let Err(e) = state.resize_and_paint(
+                            &shm,
+                            qh,
+                            state.bar_width,
+                            state.bar_height,
+                        )
+                    {
+                        warn!(error = %e, "press repaint failed");
+                    }
+                    let action = match button {
+                        BTN_LEFT => Some(PointerAction::LeftClick),
+                        BTN_RIGHT => Some(PointerAction::RightClick),
+                        BTN_MIDDLE => Some(PointerAction::MiddleClick),
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        state.dispatch_pointer_action(action, qh);
+                    }
+                } else if btn_state == WEnum::Value(ButtonState::Released)
+                    && state.pointer.pressed_island.is_some()
+                {
+                    state.pointer.pressed_island = None;
+                    if let Some(shm) = state.shm.clone()
+                        && let Err(e) = state.resize_and_paint(
+                            &shm,
+                            qh,
+                            state.bar_width,
+                            state.bar_height,
+                        )
+                    {
+                        warn!(error = %e, "release repaint failed");
+                    }
                 }
             }
             wl_pointer::Event::Axis { axis, value, .. } => {

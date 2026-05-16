@@ -39,7 +39,7 @@ pub fn paint_bar(
             font.measure(text)
         }
     });
-    let frame = paint_computed(spec, &computed, &font, icons)?;
+    let frame = paint_computed(spec, &computed, &font, icons, None, None)?;
     Ok(PaintOutput { frame, computed })
 }
 
@@ -48,6 +48,8 @@ pub fn paint_computed(
     computed: &ComputedBar,
     font: &FontContext,
     icons: &mut IconCache,
+    hover_island: Option<usize>,
+    active_island: Option<usize>,
 ) -> Result<Frame, AbarError> {
     let width = computed.width;
     let height = computed.height.max(1);
@@ -67,8 +69,19 @@ pub fn paint_computed(
             .map_err(|e| AbarError::Render(format!("clear: {e}")))?;
         cr.set_operator(Operator::Over);
 
-        for island in &computed.islands {
-            set_source_bgra(&cr, spec.colors.background);
+        for (idx, island) in computed.islands.iter().enumerate() {
+            let bg = if Some(idx) == active_island {
+                spec.colors
+                    .active_background
+                    .unwrap_or_else(|| lighten(spec.colors.background, 0.25))
+            } else if Some(idx) == hover_island {
+                spec.colors
+                    .hover_background
+                    .unwrap_or_else(|| lighten(spec.colors.background, 0.12))
+            } else {
+                spec.colors.background
+            };
+            set_source_bgra(&cr, bg);
             rounded_rect(
                 &cr,
                 island.x,
@@ -178,4 +191,13 @@ fn set_source_bgra(cr: &Context, bgra: [u8; 4]) {
         f64::from(b) / 255.0,
         f64::from(a) / 255.0,
     );
+}
+
+/// Blend each RGB channel toward 255 (white) by `amount` (0.0–1.0). Alpha is unchanged.
+fn lighten(bgra: [u8; 4], amount: f32) -> [u8; 4] {
+    let ch = |c: u8| -> u8 {
+        let v = f32::from(c);
+        (v + (255.0 - v) * amount).round() as u8
+    };
+    [ch(bgra[0]), ch(bgra[1]), ch(bgra[2]), bgra[3]]
 }

@@ -1,6 +1,10 @@
 [base]
 background_color = "#161925FF"
 foreground_color = "#c74dedFF"
+# Island background when the pointer hovers over it (optional).
+# hover_background_color = "#1e2535FF"
+# Island background while a mouse button is held down on it (optional).
+# active_background_color = "#252d40FF"
 # TODO: decide how to configure bar size and scaling, hardcode some value for now
 # scale_factor = 1.5
 
