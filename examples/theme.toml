@@ -1,6 +1,16 @@
 [base]
 background_color = "#161925FF"
 foreground_color = "#c74dedFF"
+# Island background when the pointer hovers over it (optional).
+# hover_background_color = "#1e2535FF"
+# Island background while a mouse button is held down on it (optional).
+# active_background_color = "#252d40FF"
+# Horizontal padding (left + right) inside each island, in logical pixels.
+# island_padding_x = 12
+# Vertical padding (top + bottom) inside each island, in logical pixels.
+# island_padding_y = 4
+# Corner radius of island rounded rectangles, in logical pixels. 0 = sharp corners.
+# island_radius = 12
 # TODO: decide how to configure bar size and scaling, hardcode some value for now
 # scale_factor = 1.5
 

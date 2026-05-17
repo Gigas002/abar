@@ -19,6 +19,8 @@ fn sample_bar() -> ComputedBar {
                     icon_name: None,
                     display_mode: DisplayMode::TextOnly,
                     events: SegmentEvents::default(),
+                    use_markup: false,
+                    submenu: Vec::new(),
                     x: 20.0,
                     y: 8.0,
                     width: 56.0,
@@ -37,6 +39,8 @@ fn sample_bar() -> ComputedBar {
                         icon_name: None,
                         display_mode: DisplayMode::TextOnly,
                         events: SegmentEvents::default(),
+                        use_markup: false,
+                        submenu: Vec::new(),
                         x: 312.0,
                         y: 8.0,
                         width: 30.0,
@@ -48,6 +52,8 @@ fn sample_bar() -> ComputedBar {
                         icon_name: None,
                         display_mode: DisplayMode::TextOnly,
                         events: SegmentEvents::default(),
+                        use_markup: false,
+                        submenu: Vec::new(),
                         x: 350.0,
                         y: 8.0,
                         width: 32.0,
@@ -77,4 +83,11 @@ fn hit_test_picks_segment_by_x_inside_grouped_island() {
 fn hit_test_misses_outside_bar() {
     let bar = sample_bar();
     assert!(hit_test(&bar, 200.0, 200.0).is_none());
+}
+
+#[test]
+fn hit_test_misses_gap_between_segments_in_group() {
+    // x=346 falls in the horizontal gap between kb (312..342) and tray (350..382)
+    let bar = sample_bar();
+    assert!(hit_test(&bar, 346.0, 16.0).is_none());
 }

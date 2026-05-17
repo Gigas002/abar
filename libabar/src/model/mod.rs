@@ -1,3 +1,10 @@
+/// A single item in a custom module's popup submenu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmenuItemConfig {
+    pub content: String,
+    pub action: String,
+}
+
 /// Optional shell commands for pointer actions on a module segment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SegmentEvents {
@@ -47,6 +54,11 @@ pub struct Segment {
     pub icon_name: Option<String>,
     pub display_mode: DisplayMode,
     pub events: SegmentEvents,
+    /// When true, `label` is treated as Pango markup (e.g. `<span foreground="…">…</span>`).
+    pub use_markup: bool,
+    /// Popup submenu items; non-empty means a left click opens the submenu instead of
+    /// executing `events.on_left_click`.
+    pub submenu: Vec<SubmenuItemConfig>,
 }
 
 impl Segment {
@@ -58,6 +70,8 @@ impl Segment {
             icon_name: None,
             display_mode: DisplayMode::TextOnly,
             events: SegmentEvents::default(),
+            use_markup: false,
+            submenu: Vec::new(),
         }
     }
 
@@ -70,7 +84,15 @@ impl Segment {
             icon_name: Some(icon_name.into()),
             display_mode: DisplayMode::IconOnly,
             events: SegmentEvents::default(),
+            use_markup: false,
+            submenu: Vec::new(),
         }
+    }
+
+    /// Enable Pango markup rendering for this segment.
+    pub fn with_markup(mut self) -> Self {
+        self.use_markup = true;
+        self
     }
 }
 
@@ -89,10 +111,14 @@ pub struct BarLayout {
 }
 
 /// Colors in **BGRA** byte order for `WL_SHM_FORMAT_ARGB8888` buffers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BarColors {
     pub background: [u8; 4],
     pub foreground: [u8; 4],
+    /// Island background when the pointer is hovering over it.
+    pub hover_background: Option<[u8; 4]>,
+    /// Island background while a pointer button is held down on it.
+    pub active_background: Option<[u8; 4]>,
 }
 
 /// Spacing and typography for layout and paint.

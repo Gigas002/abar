@@ -8,6 +8,7 @@ fn test_spec(layout: BarLayout) -> BarSpec {
         BarColors {
             background: [0x25, 0x19, 0x16, 255],
             foreground: [0xed, 0x4d, 0xc7, 255],
+            ..BarColors::default()
         },
         BarStyle {
             font_name: "sans-serif".to_string(),
@@ -40,9 +41,9 @@ fn painted_island_has_background_pixel() {
         ..BarLayout::default()
     });
     let font = FontContext::new(&spec.style.font_name, spec.style.font_size).expect("sans-serif");
-    let computed = compute_bar(&spec, 400, &|t| font.measure(t));
+    let computed = compute_bar(&spec, 400, &|t, _| font.measure(t));
     let mut icons = IconCache::with_dirs(vec![], "hicolor");
-    let frame = paint_computed(&spec, &computed, &font, &mut icons).expect("paint");
+    let frame = paint_computed(&spec, &computed, &font, &mut icons, None, None).expect("paint");
 
     let island = &computed.islands[0];
     let sx = (island.x + 3.0) as u32;

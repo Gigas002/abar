@@ -31,7 +31,11 @@ theme = "theme.toml"
 [modules]
 custom = [
     { name = "system_info", icon = "gnome-system-monitor", on_left_click = "btm" },
-    { name = "wleave", icon = "system-log-out", on_left_click = "wleave" },
+    { name = "wleave", icon = "system-log-out", submenu = [
+        { content = "sleep", action = "alacritty" },
+        { content = "logout", action = "alacritty" },
+        { content = "poweroff", action = "alacritty" },
+    ] },
     { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
     { name = "bluetooth", icon = "blueman", on_left_click = "blueman-manager" },
     { name = "network", icon = "preferences-system-network", on_left_click = "nm-connection-editor" },
@@ -59,17 +63,20 @@ right = [
     ],
 ]
 
+[window]
+# Maximum number of characters to show before truncating with "…". 0 = no limit.
+max_length = 50
+
 [keyboard]
 layouts = ["en-US", "ru-RU"]
-# on_left_click: switch layout <- built-in functionality, overridable by the user
+on_left_click = "hyprctl switchxkblayout all next"
 
 [clock]
-# on_middle_click: format change <- built-in behavior, overridable by the user
 formats = [
     # 21:35 28.03.2026
     "%R %Z %d.%m.%Y",
 ]
-# on_right_click: timezone change <- built-in behavior, overridable by the user
+# on_scroll_up / on_scroll_down: cycle through timezones
 timezones = ["Asia/Tokyo", "Europe/Moscow"]
 # launch calendar app on left click
 on_left_click = "rusti-cal"

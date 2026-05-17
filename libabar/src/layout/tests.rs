@@ -1,7 +1,7 @@
 use super::*;
 use crate::model::{BarStyle, Island, Segment};
 
-fn fixed_measure(label: &str) -> (f64, f64) {
+fn fixed_measure(label: &str, _is_markup: bool) -> (f64, f64) {
     let w = label.len() as f64 * 8.0;
     (w, 16.0)
 }

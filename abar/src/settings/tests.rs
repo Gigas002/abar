@@ -63,6 +63,10 @@ on_left_click = "rusti-cal"
     assert!(!s.bar.layout.left.is_empty());
     assert_eq!(s.bar.layout.center.len(), 1);
     assert!(!s.bar.layout.right.is_empty());
+    // When the clock feature is active the segment shows live time, not the placeholder.
+    #[cfg(feature = "clock")]
+    assert_ne!(s.bar.layout.right[1].segments[1].label, "clock");
+    #[cfg(not(feature = "clock"))]
     assert_eq!(s.bar.layout.right[1].segments[1].label, "clock");
     assert_eq!(s.bar.layout.right[1].segments[1].module_id, "clock");
     assert_eq!(
@@ -73,6 +77,61 @@ on_left_click = "rusti-cal"
         Some("rusti-cal")
     );
     assert_eq!(s.font_size(), 16.0);
+}
+
+#[test]
+fn resolve_island_style_from_theme() {
+    let cfg: Config = toml::from_str(
+        r#"
+[base]
+font_name = "sans-serif"
+font_size = 14
+[layout]
+left = []
+center = []
+right = []
+"#,
+    )
+    .unwrap();
+    let theme = Theme::parse_str(
+        r##"
+[base]
+background_color = "#000000FF"
+foreground_color = "#FFFFFFFF"
+island_padding_x = 20
+island_padding_y = 8
+island_radius = 6
+"##,
+    )
+    .unwrap();
+    let cli = Cli::try_parse_from(["abar"]).unwrap();
+    let s = Settings::resolve(&cli, cfg, theme).unwrap();
+    assert_eq!(s.bar.style.island_padding_x, 20.0);
+    assert_eq!(s.bar.style.island_padding_y, 8.0);
+    assert_eq!(s.bar.style.island_radius, 6.0);
+}
+
+#[test]
+fn resolve_island_style_uses_defaults_when_absent() {
+    use libabar::BarStyle;
+    let cfg: Config = toml::from_str(
+        r#"
+[base]
+font_name = "sans-serif"
+font_size = 14
+[layout]
+left = []
+center = []
+right = []
+"#,
+    )
+    .unwrap();
+    let cli = Cli::try_parse_from(["abar"]).unwrap();
+    let s = Settings::resolve(&cli, cfg, Theme::default()).unwrap();
+    let defaults = BarStyle::default();
+    assert_eq!(s.bar.style.island_padding_x, defaults.island_padding_x);
+    assert_eq!(s.bar.style.island_padding_y, defaults.island_padding_y);
+    assert_eq!(s.bar.style.island_radius, defaults.island_radius);
 }
 
 #[test]
