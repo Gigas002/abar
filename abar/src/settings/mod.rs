@@ -64,6 +64,15 @@ impl Settings {
             .map(parse_hex_rgba_to_bgra)
             .transpose()?;
 
+        let defaults = BarStyle::default();
+        let island_padding_x = theme_base
+            .island_padding_x
+            .unwrap_or(defaults.island_padding_x);
+        let island_padding_y = theme_base
+            .island_padding_y
+            .unwrap_or(defaults.island_padding_y);
+        let island_radius = theme_base.island_radius.unwrap_or(defaults.island_radius);
+
         Ok(Self {
             bar: BarSpec::new(
                 BarColors {
@@ -75,7 +84,10 @@ impl Settings {
                 BarStyle {
                     font_name,
                     font_size,
-                    ..BarStyle::default()
+                    island_padding_x,
+                    island_padding_y,
+                    island_radius,
+                    ..defaults
                 },
                 layout,
             ),

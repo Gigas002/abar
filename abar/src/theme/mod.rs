@@ -19,6 +19,12 @@ pub struct Base {
     pub foreground_color: Option<String>,
     pub hover_background_color: Option<String>,
     pub active_background_color: Option<String>,
+    /// Horizontal padding (left + right) inside each island, in logical pixels.
+    pub island_padding_x: Option<f64>,
+    /// Vertical padding (top + bottom) inside each island, in logical pixels.
+    pub island_padding_y: Option<f64>,
+    /// Corner radius of island rounded rectangles, in logical pixels.
+    pub island_radius: Option<f64>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -35,6 +41,9 @@ impl Default for Base {
             foreground_color: Some("#FFFFFFFF".to_string()),
             hover_background_color: None,
             active_background_color: None,
+            island_padding_x: None,
+            island_padding_y: None,
+            island_radius: None,
         }
     }
 }
