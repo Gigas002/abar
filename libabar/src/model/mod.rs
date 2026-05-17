@@ -1,3 +1,10 @@
+/// A single item in a custom module's popup submenu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmenuItemConfig {
+    pub content: String,
+    pub action: String,
+}
+
 /// Optional shell commands for pointer actions on a module segment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SegmentEvents {
@@ -49,6 +56,9 @@ pub struct Segment {
     pub events: SegmentEvents,
     /// When true, `label` is treated as Pango markup (e.g. `<span foreground="…">…</span>`).
     pub use_markup: bool,
+    /// Popup submenu items; non-empty means a left click opens the submenu instead of
+    /// executing `events.on_left_click`.
+    pub submenu: Vec<SubmenuItemConfig>,
 }
 
 impl Segment {
@@ -61,6 +71,7 @@ impl Segment {
             display_mode: DisplayMode::TextOnly,
             events: SegmentEvents::default(),
             use_markup: false,
+            submenu: Vec::new(),
         }
     }
 
@@ -74,6 +85,7 @@ impl Segment {
             display_mode: DisplayMode::IconOnly,
             events: SegmentEvents::default(),
             use_markup: false,
+            submenu: Vec::new(),
         }
     }
 

@@ -31,7 +31,11 @@ theme = "theme.toml"
 [modules]
 custom = [
     { name = "system_info", icon = "gnome-system-monitor", on_left_click = "btm" },
-    { name = "wleave", icon = "system-log-out", on_left_click = "wleave" },
+    { name = "wleave", icon = "system-log-out", submenu = [
+        { content = "sleep", action = "alacritty" },
+        { content = "logout", action = "alacritty" },
+        { content = "poweroff", action = "alacritty" },
+    ] },
     { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
     { name = "bluetooth", icon = "blueman", on_left_click = "blueman-manager" },
     { name = "network", icon = "preferences-system-network", on_left_click = "nm-connection-editor" },

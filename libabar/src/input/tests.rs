@@ -34,6 +34,7 @@ fn dispatch_spawns_configured_command() {
                     ..SegmentEvents::default()
                 },
                 use_markup: false,
+                submenu: Vec::new(),
                 x: 0.0,
                 y: 0.0,
                 width: 100.0,
@@ -71,6 +72,7 @@ fn dispatch_without_configured_command_is_noop() {
                 display_mode: DisplayMode::TextOnly,
                 events: SegmentEvents::default(),
                 use_markup: false,
+                submenu: Vec::new(),
                 x: 0.0,
                 y: 0.0,
                 width: 10.0,

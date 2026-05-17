@@ -173,6 +173,118 @@ pub fn paint_computed(
     })
 }
 
+/// Paint a submenu popup into a CPU buffer.
+///
+/// Uses the same font, colors and geometry parameters as the bar so no new theming
+/// variables are needed.  The caller supplies the pre-computed `item_height` (pixels per
+/// row) so that the submenu surface matches the dimensions that were already sent to the
+/// compositor via `set_size`.
+pub fn paint_submenu(
+    items: &[crate::model::SubmenuItemConfig],
+    style: &crate::model::BarStyle,
+    colors: &BarColors,
+    hovered: Option<usize>,
+    item_height: f64,
+    font: &FontContext,
+) -> Result<Frame, AbarError> {
+    // Measure the widest label to size the surface.
+    let mut max_w = 0.0_f64;
+    for item in items {
+        let (w, _) = font.measure(&item.content);
+        max_w = max_w.max(w);
+    }
+
+    let width = ((max_w + 2.0 * style.island_padding_x).ceil() as u32).max(1);
+    let height = ((item_height * items.len() as f64).ceil() as u32).max(1);
+    let stride = (width * 4) as i32;
+
+    let surface = ImageSurface::create(Format::ARgb32, width as i32, height as i32)
+        .map_err(|e| AbarError::Render(format!("submenu surface: {e}")))?;
+    {
+        let cr = Context::new(&surface)
+            .map_err(|e| AbarError::Render(format!("submenu context: {e}")))?;
+
+        cr.set_operator(Operator::Clear);
+        cr.paint()
+            .map_err(|e| AbarError::Render(format!("submenu clear: {e}")))?;
+        cr.set_operator(Operator::Over);
+
+        // Rounded background
+        set_source_bgra(&cr, colors.background);
+        rounded_rect(
+            &cr,
+            0.0,
+            0.0,
+            width as f64,
+            height as f64,
+            style.island_radius,
+        );
+        cr.fill()
+            .map_err(|e| AbarError::Render(format!("submenu bg fill: {e}")))?;
+
+        // Per-item hover highlights, clipped to the rounded background shape.
+        cr.save()
+            .map_err(|e| AbarError::Render(format!("submenu clip save: {e}")))?;
+        rounded_rect(
+            &cr,
+            0.0,
+            0.0,
+            width as f64,
+            height as f64,
+            style.island_radius,
+        );
+        cr.clip();
+        for (i, _) in items.iter().enumerate() {
+            if hovered == Some(i) {
+                let bg = colors
+                    .hover_background
+                    .unwrap_or_else(|| lighten(colors.background, 0.12));
+                set_source_bgra(&cr, bg);
+                let item_y = i as f64 * item_height;
+                cr.rectangle(0.0, item_y, width as f64, item_height);
+                cr.fill()
+                    .map_err(|e| AbarError::Render(format!("submenu hover fill: {e}")))?;
+            }
+        }
+        cr.restore()
+            .map_err(|e| AbarError::Render(format!("submenu clip restore: {e}")))?;
+
+        // Item labels, left-aligned with island_padding_x.
+        for (i, item) in items.iter().enumerate() {
+            let (_, th) = font.measure(&item.content);
+            let item_y = i as f64 * item_height;
+            let tx = style.island_padding_x;
+            let ty = item_y + (item_height - th) / 2.0;
+            cr.move_to(tx, ty);
+            set_source_bgra(&cr, colors.foreground);
+            show_layout(&cr, font.layout());
+        }
+    }
+
+    let mut data = surface
+        .take_data()
+        .map_err(|e| AbarError::Render(format!("submenu take_data: {e}")))?
+        .to_vec();
+
+    let row_bytes = (width * 4) as usize;
+    if data.len() >= (stride * height as i32) as usize && stride as usize != row_bytes {
+        let mut tight = vec![0u8; row_bytes * height as usize];
+        for row in 0..height as usize {
+            let src = row * stride as usize;
+            let dst = row * row_bytes;
+            tight[dst..dst + row_bytes].copy_from_slice(&data[src..src + row_bytes]);
+        }
+        data = tight;
+    }
+
+    Ok(Frame {
+        width,
+        height,
+        stride,
+        data,
+    })
+}
+
 fn draw_segment_text(
     cr: &Context,
     font: &FontContext,

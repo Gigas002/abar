@@ -3,9 +3,17 @@ use serde::Deserialize;
 use super::events::Events;
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct SubmenuItem {
+    pub content: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Custom {
     pub name: String,
     pub icon: String,
+    #[serde(default)]
+    pub submenu: Vec<SubmenuItem>,
     #[serde(flatten)]
     pub events: Option<Events>,
 }

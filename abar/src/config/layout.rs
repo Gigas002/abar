@@ -1,4 +1,4 @@
-use libabar::{BarLayout, DisplayMode, Island, Segment};
+use libabar::{BarLayout, DisplayMode, Island, Segment, SubmenuItemConfig};
 use serde::Deserialize;
 
 use super::modules::Modules;
@@ -76,7 +76,16 @@ fn entry_to_island(entry: &LayoutEntry, modules: Option<&Modules>) -> Island {
 fn make_segment(name: &str, modules: Option<&Modules>) -> Segment {
     // Custom modules: icon-only display; events are wired by apply_module_events.
     if let Some(custom) = modules.and_then(|m| m.custom_by_name(name)) {
-        return Segment::icon_only(name, &custom.icon);
+        let mut seg = Segment::icon_only(name, &custom.icon);
+        seg.submenu = custom
+            .submenu
+            .iter()
+            .map(|item| SubmenuItemConfig {
+                content: item.content.clone(),
+                action: item.action.clone(),
+            })
+            .collect();
+        return seg;
     }
     // Built-in modules: text placeholder until their own phase adds live data.
     let mut seg = Segment::new(name, builtin_label(name));

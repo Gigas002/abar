@@ -16,6 +16,7 @@ pub use icon::{IconCache, default_search_dirs, resolve_icon};
 pub use input::PointerAction;
 pub use model::{
     BarColors, BarLayout, BarSpec, BarStyle, DisplayMode, Island, Segment, SegmentEvents,
+    SubmenuItemConfig,
 };
 pub use modules::ModuleConfigs;
 #[cfg(feature = "workspaces")]

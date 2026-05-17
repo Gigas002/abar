@@ -297,7 +297,6 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 7 — **Tray** (must-have): `zbus` + StatusNotifier host
 
-- [ ] implement custom menu drawing (must follow theme, simple surface with list of text buttons?)
 - [ ] Implement tray host and item rendering (**StatusNotifier pixmaps** via shared **icon** / image path from Phase 4, attention state, **simple** menu exposure if required by spec — still drawn with Cairo/Pango or delegated only via user-spawned commands per product rules in §1.3; **no** iced menus).
 - [ ] All D-Bus via **`zbus`**; gate in **`tray`** feature.
 - [ ] Use **ashell** source as a **semantic** reference for registration names, watcher protocol, and edge cases; do not copy iced-dependent UI.

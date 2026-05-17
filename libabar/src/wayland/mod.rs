@@ -13,8 +13,9 @@ use std::sync::RwLock;
 #[cfg(feature = "clock")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
+use wayland_client::protocol::wl_keyboard;
 #[cfg(feature = "keyboard")]
-use wayland_client::protocol::wl_keyboard::{self, KeymapFormat};
+use wayland_client::protocol::wl_keyboard::KeymapFormat;
 
 use rustix::event::{PollFd, PollFlags, poll};
 use tracing::{debug, warn};
@@ -81,8 +82,10 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         bar_height: 1,
         computed: None,
         pointer: PointerState::default(),
+        keyboard: None,
         #[cfg(feature = "keyboard")]
         kb: KeyboardWlState::default(),
+        submenu: None,
         icon_cache: IconCache::new(),
         font: None,
         updates_tx: updates_tx.clone(),
@@ -656,7 +659,6 @@ fn hyprland_switch_workspace(id: i32) -> Result<(), String> {
 #[cfg(feature = "keyboard")]
 #[derive(Default)]
 struct KeyboardWlState {
-    keyboard: Option<wl_keyboard::WlKeyboard>,
     /// Layout names extracted from the compositor's XKB keymap.
     /// Shared with the Hyprland task so it can map layout names to group indices.
     xkb_layouts: Arc<RwLock<Vec<String>>>,
@@ -693,6 +695,24 @@ struct PointerState {
     hovered: Option<(usize, usize)>,
     /// `(island_index, segment_index)` of the segment being pressed.
     pressed: Option<(usize, usize)>,
+    /// True when the pointer is over the open submenu surface.
+    on_submenu: bool,
+    submenu_x: f64,
+    submenu_y: f64,
+}
+
+struct SubmenuState {
+    surface: wl_surface::WlSurface,
+    layer_surface: ZwlrLayerSurfaceV1,
+    pool: Option<wl_shm_pool::WlShmPool>,
+    pool_file: Option<std::fs::File>,
+    buffer: Option<wl_buffer::WlBuffer>,
+    items: Vec<crate::model::SubmenuItemConfig>,
+    hovered: Option<usize>,
+    item_height: f64,
+    width: u32,
+    #[allow(dead_code)]
+    height: u32,
 }
 
 struct AppState {
@@ -712,8 +732,10 @@ struct AppState {
     bar_height: u32,
     computed: Option<ComputedBar>,
     pointer: PointerState,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
     #[cfg(feature = "keyboard")]
     kb: KeyboardWlState,
+    submenu: Option<SubmenuState>,
     icon_cache: IconCache,
     font: Option<FontContext>,
     #[allow(dead_code)]
@@ -767,13 +789,12 @@ impl AppState {
         debug!("pointer bound");
     }
 
-    #[cfg(feature = "keyboard")]
     fn bind_keyboard(&mut self, seat: &wl_seat::WlSeat, qh: &QueueHandle<Self>) {
-        if self.kb.keyboard.is_some() {
+        if self.keyboard.is_some() {
             return;
         }
         let kb = seat.get_keyboard(qh, ());
-        self.kb.keyboard = Some(kb);
+        self.keyboard = Some(kb);
         debug!("keyboard bound");
     }
 
@@ -805,6 +826,190 @@ impl AppState {
             && let Err(e) = self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
         {
             warn!(error = %e, "leave repaint failed");
+        }
+    }
+
+    fn open_submenu(
+        &mut self,
+        items: Vec<crate::model::SubmenuItemConfig>,
+        seg_x: f64,
+        seg_right: f64,
+        qh: &QueueHandle<Self>,
+    ) {
+        self.close_submenu(qh);
+
+        // Measure item dimensions (needs font and style).
+        let (width, height, item_height) = {
+            let Some(font) = self.font.as_ref() else {
+                return;
+            };
+            let mut max_w = 0.0_f64;
+            let mut text_h = 0.0_f64;
+            for item in &items {
+                let (w, h) = font.measure(&item.content);
+                max_w = max_w.max(w);
+                text_h = text_h.max(h);
+            }
+            let item_h = text_h + 2.0 * self.spec.style.island_padding_y;
+            let w = ((max_w + 2.0 * self.spec.style.island_padding_x).ceil() as u32).max(1);
+            let h = ((item_h * items.len() as f64).ceil() as u32).max(1);
+            (w, h, item_h)
+        };
+
+        let surface = {
+            let Some(compositor) = self.compositor.as_ref() else {
+                return;
+            };
+            compositor.create_surface(qh, ())
+        };
+
+        let layer_surface = {
+            let Some(layer_shell) = self.layer_shell.as_ref() else {
+                return;
+            };
+            layer_shell.get_layer_surface(
+                &surface,
+                None,
+                Layer::Overlay,
+                "abar-submenu".to_string(),
+                qh,
+                true,
+            )
+        };
+
+        // Always anchor Top|Left. For the normal case align the submenu's left edge with
+        // the segment's left edge. If that would overflow the right edge of the output,
+        // shift left so the submenu's right edge aligns with the segment's right edge instead.
+        let bar_w = self.bar_width as f64;
+        let left_margin = if seg_x + width as f64 <= bar_w {
+            seg_x
+        } else {
+            (seg_right - width as f64).max(0.0)
+        };
+
+        layer_surface.set_anchor(Anchor::Top | Anchor::Left);
+        layer_surface.set_margin(0, 0, 0, left_margin as i32);
+        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        layer_surface.set_size(width, height);
+        surface.commit();
+
+        self.submenu = Some(SubmenuState {
+            surface,
+            layer_surface,
+            pool: None,
+            pool_file: None,
+            buffer: None,
+            items,
+            hovered: None,
+            item_height,
+            width,
+            height,
+        });
+    }
+
+    fn close_submenu(&mut self, _qh: &QueueHandle<Self>) {
+        if let Some(sm) = self.submenu.take() {
+            sm.layer_surface.destroy();
+            sm.surface.destroy();
+        }
+        self.pointer.on_submenu = false;
+    }
+
+    fn repaint_submenu(&mut self, qh: &QueueHandle<Self>) -> Result<(), AbarError> {
+        let (items, hovered, item_height) = match self.submenu.as_ref() {
+            Some(sm) => (sm.items.clone(), sm.hovered, sm.item_height),
+            None => return Ok(()),
+        };
+        let Some(shm) = self.shm.clone() else {
+            return Ok(());
+        };
+        let Some(font) = self.font.as_ref() else {
+            return Ok(());
+        };
+
+        let frame = crate::render::paint_submenu(
+            &items,
+            &self.spec.style,
+            &self.spec.colors,
+            hovered,
+            item_height,
+            font,
+        )?;
+
+        let stride = frame.stride;
+        let buf_h = frame.height;
+        let size = (stride as u64)
+            .checked_mul(buf_h as u64)
+            .ok_or_else(|| AbarError::WaylandProtocol("submenu buffer size overflow".into()))?;
+
+        {
+            let sm = self.submenu.as_mut().unwrap();
+            sm.buffer = None;
+            sm.pool = None;
+            sm.pool_file = None;
+        }
+
+        let mut file = tempfile::tempfile_in("/dev/shm").map_err(|source| AbarError::Io {
+            path: std::path::PathBuf::from("/dev/shm"),
+            source,
+        })?;
+
+        use std::io::Write;
+        file.write_all(&frame.data)
+            .map_err(|source| AbarError::Io {
+                path: std::path::PathBuf::from("/dev/shm"),
+                source,
+            })?;
+        file.flush().map_err(|source| AbarError::Io {
+            path: std::path::PathBuf::from("/dev/shm"),
+            source,
+        })?;
+
+        let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
+        let buffer = pool.create_buffer(
+            0,
+            frame.width as i32,
+            buf_h as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+            qh,
+            (),
+        );
+
+        let sm = self.submenu.as_mut().unwrap();
+        sm.surface.attach(Some(&buffer), 0, 0);
+        sm.surface
+            .damage_buffer(0, 0, frame.width as i32, buf_h as i32);
+        sm.surface.commit();
+        sm.pool_file = Some(file);
+        sm.pool = Some(pool);
+        sm.buffer = Some(buffer);
+
+        Ok(())
+    }
+
+    fn update_submenu_hover(&mut self, qh: &QueueHandle<Self>) {
+        let x = self.pointer.submenu_x;
+        let y = self.pointer.submenu_y;
+        let new_hovered = self.submenu.as_ref().and_then(|sm| {
+            let idx = (y / sm.item_height) as usize;
+            if x >= 0.0 && x <= sm.width as f64 && y >= 0.0 && idx < sm.items.len() {
+                Some(idx)
+            } else {
+                None
+            }
+        });
+        let changed = self
+            .submenu
+            .as_ref()
+            .is_some_and(|sm| sm.hovered != new_hovered);
+        if changed {
+            if let Some(sm) = self.submenu.as_mut() {
+                sm.hovered = new_hovered;
+            }
+            if let Err(e) = self.repaint_submenu(qh) {
+                warn!(error = %e, "submenu hover repaint failed");
+            }
         }
     }
 
@@ -872,6 +1077,32 @@ impl AppState {
                     {
                         warn!(error = %e, workspace = id, "failed to switch workspace");
                     }
+                }
+                return;
+            }
+        }
+
+        // Left click on a segment with a submenu opens/closes it instead of running on_left_click.
+        if matches!(action, PointerAction::LeftClick) {
+            let submenu_info = {
+                let computed = self.computed.as_ref().unwrap();
+                crate::hit_test::segment_coords_at(computed, x, y).and_then(
+                    |(island_idx, seg_idx)| {
+                        let island = &computed.islands[island_idx];
+                        let seg = &island.segments[seg_idx];
+                        if seg.submenu.is_empty() {
+                            None
+                        } else {
+                            Some((seg.submenu.clone(), seg.x, seg.x + seg.width))
+                        }
+                    },
+                )
+            };
+            if let Some((items, seg_x, seg_right)) = submenu_info {
+                if self.submenu.is_some() {
+                    self.close_submenu(_qh);
+                } else {
+                    self.open_submenu(items, seg_x, seg_right, _qh);
                 }
                 return;
             }
@@ -1116,7 +1347,6 @@ impl Dispatch<wl_seat::WlSeat, ()> for AppState {
         if caps.contains(wl_seat::Capability::Pointer) {
             state.bind_pointer(seat, qh);
         }
-        #[cfg(feature = "keyboard")]
         if caps.contains(wl_seat::Capability::Keyboard) {
             state.bind_keyboard(seat, qh);
         }
@@ -1136,21 +1366,50 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
             wl_pointer::Event::Enter { surface, .. } => {
                 state.pointer.on_surface =
                     state.surface.as_ref().is_some_and(|ours| &surface == ours);
+                state.pointer.on_submenu = state
+                    .submenu
+                    .as_ref()
+                    .is_some_and(|sm| surface == sm.surface);
             }
-            wl_pointer::Event::Leave { surface, .. }
-                if state.surface.as_ref().is_some_and(|ours| &surface == ours) =>
-            {
-                state.pointer.on_surface = false;
-                state.clear_interaction(qh);
+            wl_pointer::Event::Leave { surface, .. } => {
+                if state.surface.as_ref().is_some_and(|ours| &surface == ours) {
+                    state.pointer.on_surface = false;
+                    state.clear_interaction(qh);
+                }
+                if state
+                    .submenu
+                    .as_ref()
+                    .is_some_and(|sm| surface == sm.surface)
+                {
+                    state.pointer.on_submenu = false;
+                    let needs_repaint = state
+                        .submenu
+                        .as_ref()
+                        .is_some_and(|sm| sm.hovered.is_some());
+                    if needs_repaint {
+                        if let Some(sm) = state.submenu.as_mut() {
+                            sm.hovered = None;
+                        }
+                        if let Err(e) = state.repaint_submenu(qh) {
+                            warn!(error = %e, "submenu leave repaint failed");
+                        }
+                    }
+                }
             }
             wl_pointer::Event::Motion {
                 surface_x,
                 surface_y,
                 ..
             } => {
-                state.pointer.x = surface_x;
-                state.pointer.y = surface_y;
-                state.update_hover(qh);
+                if state.pointer.on_submenu {
+                    state.pointer.submenu_x = surface_x;
+                    state.pointer.submenu_y = surface_y;
+                    state.update_submenu_hover(qh);
+                } else {
+                    state.pointer.x = surface_x;
+                    state.pointer.y = surface_y;
+                    state.update_hover(qh);
+                }
             }
             wl_pointer::Event::Button {
                 button,
@@ -1158,21 +1417,39 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 ..
             } => {
                 if btn_state == WEnum::Value(ButtonState::Pressed) {
-                    state.pointer.pressed = state.pointer.hovered;
-                    if let Some(shm) = state.shm.clone()
-                        && let Err(e) =
-                            state.resize_and_paint(&shm, qh, state.bar_width, state.bar_height)
-                    {
-                        warn!(error = %e, "press repaint failed");
-                    }
-                    let action = match button {
-                        BTN_LEFT => Some(PointerAction::LeftClick),
-                        BTN_RIGHT => Some(PointerAction::RightClick),
-                        BTN_MIDDLE => Some(PointerAction::MiddleClick),
-                        _ => None,
-                    };
-                    if let Some(action) = action {
-                        state.dispatch_pointer_action(action, qh);
+                    if state.pointer.on_submenu {
+                        // Click inside submenu: run the hovered item's action then close.
+                        if button == BTN_LEFT {
+                            let action = state
+                                .submenu
+                                .as_ref()
+                                .and_then(|sm| sm.hovered.map(|idx| sm.items[idx].action.clone()));
+                            state.close_submenu(qh);
+                            if let Some(cmd) = action {
+                                spawn::spawn_shell_command(&cmd);
+                            }
+                        }
+                    } else if state.submenu.is_some() {
+                        // Click outside the submenu (on bar or elsewhere): just close it.
+                        state.close_submenu(qh);
+                    } else {
+                        // Normal bar button press.
+                        state.pointer.pressed = state.pointer.hovered;
+                        if let Some(shm) = state.shm.clone()
+                            && let Err(e) =
+                                state.resize_and_paint(&shm, qh, state.bar_width, state.bar_height)
+                        {
+                            warn!(error = %e, "press repaint failed");
+                        }
+                        let action = match button {
+                            BTN_LEFT => Some(PointerAction::LeftClick),
+                            BTN_RIGHT => Some(PointerAction::RightClick),
+                            BTN_MIDDLE => Some(PointerAction::MiddleClick),
+                            _ => None,
+                        };
+                        if let Some(action) = action {
+                            state.dispatch_pointer_action(action, qh);
+                        }
                     }
                 } else if btn_state == WEnum::Value(ButtonState::Released)
                     && state.pointer.pressed.is_some()
@@ -1250,7 +1527,6 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for AppState {
     }
 }
 
-#[cfg(feature = "keyboard")]
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
     fn event(
         state: &mut Self,
@@ -1261,6 +1537,18 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
         qh: &QueueHandle<Self>,
     ) {
         match event {
+            // Esc (evdev key 1) closes any open submenu.
+            wl_keyboard::Event::Key {
+                key,
+                state: key_state,
+                ..
+            } => {
+                use wayland_client::protocol::wl_keyboard::KeyState;
+                if key_state == WEnum::Value(KeyState::Pressed) && key == 1 {
+                    state.close_submenu(qh);
+                }
+            }
+            #[cfg(feature = "keyboard")]
             wl_keyboard::Event::Keymap { format, fd, size } => {
                 if format != WEnum::Value(KeymapFormat::XkbV1) {
                     return;
@@ -1323,6 +1611,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
                     }
                 }
             }
+            #[cfg(feature = "keyboard")]
             wl_keyboard::Event::Modifiers { group, .. } => {
                 // Only received when the bar surface has keyboard focus.
                 state.kb.active_group = group;
@@ -1339,6 +1628,34 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
                         warn!(error = %e, "keyboard modifiers repaint failed");
                     }
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Dispatch for the submenu layer surface (userdata = `true` distinguishes it from the bar).
+impl Dispatch<ZwlrLayerSurfaceV1, bool> for AppState {
+    fn event(
+        state: &mut Self,
+        layer_surface: &ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
+        _: &bool,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
+                layer_surface.ack_configure(serial);
+                if let Err(e) = state.repaint_submenu(qh) {
+                    warn!(error = %e, "submenu configure repaint failed");
+                }
+            }
+            zwlr_layer_surface_v1::Event::Closed => {
+                debug!("submenu layer surface closed");
+                // Drop the state but don't call close_submenu (which would call destroy() again).
+                state.submenu = None;
+                state.pointer.on_submenu = false;
             }
             _ => {}
         }
