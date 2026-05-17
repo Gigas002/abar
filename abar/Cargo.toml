@@ -13,7 +13,7 @@ name = "abar"
 path = "src/main.rs"
 
 [features]
-default = ["clock", "keyboard", "tray", "workspaces", "window", "hyprland", "svg"]
+default = []
 clock = ["libabar/clock"]
 keyboard = ["libabar/keyboard"]
 tray = ["libabar/tray"]
