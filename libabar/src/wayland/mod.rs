@@ -135,11 +135,13 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 source,
             })?;
             let xkb_layouts = Arc::clone(&state.kb.xkb_layouts);
+            let last_hyprland_layout = Arc::clone(&state.kb.last_hyprland_layout);
             let config_layouts = state.kb.config_layouts.clone();
             spawn::ensure_runtime()?.spawn(hyprland_keyboard_task(
                 tx,
                 wakeup,
                 xkb_layouts,
+                last_hyprland_layout,
                 config_layouts,
             ));
         }
@@ -283,10 +285,49 @@ async fn clock_task(
 // ---------------------------------------------------------------------------
 
 #[cfg(all(feature = "keyboard", feature = "hyprland"))]
+fn resolve_keyboard_label(
+    raw_name: &str,
+    xkb_layouts: &[String],
+    config_layouts: &[String],
+) -> String {
+    let idx = xkb_layouts.iter().position(|n| n == raw_name);
+    match idx {
+        Some(i) => crate::modules::keyboard::current_label(xkb_layouts, config_layouts, i as u32),
+        None => raw_name.to_owned(),
+    }
+}
+
+#[cfg(all(feature = "keyboard", feature = "hyprland"))]
+async fn fetch_keyboard_label(
+    xkb_layouts: &Arc<RwLock<Vec<String>>>,
+    last_hyprland_layout: &Arc<RwLock<Option<String>>>,
+    config_layouts: &[String],
+) -> Option<String> {
+    use hyprland::data::Devices;
+    use hyprland::shared::HyprData;
+
+    let devices = Devices::get_async().await.ok()?;
+    let active_keymap = devices
+        .keyboards
+        .iter()
+        .find(|kb| kb.main)
+        .or_else(|| devices.keyboards.first())
+        .map(|kb| kb.active_keymap.clone())?;
+
+    // Persist the raw name so the wl_keyboard Keymap handler can re-resolve it
+    // once xkb_layouts is populated (it may still be empty here at startup).
+    *last_hyprland_layout.write().unwrap() = Some(active_keymap.clone());
+
+    let xkb = xkb_layouts.read().unwrap();
+    Some(resolve_keyboard_label(&active_keymap, &xkb, config_layouts))
+}
+
+#[cfg(all(feature = "keyboard", feature = "hyprland"))]
 async fn hyprland_keyboard_task(
     tx: mpsc::SyncSender<ModuleUpdate>,
     wakeup: UnixStream,
     xkb_layouts: Arc<RwLock<Vec<String>>>,
+    last_hyprland_layout: Arc<RwLock<Option<String>>>,
     config_layouts: Vec<String>,
 ) {
     use hyprland::event_listener::{AsyncEventListener, LayoutEvent};
@@ -297,34 +338,34 @@ async fn hyprland_keyboard_task(
     let wakeup = Arc::new(Mutex::new(wakeup));
     let config_layouts = Arc::new(config_layouts);
 
+    if let Some(label) =
+        fetch_keyboard_label(&xkb_layouts, &last_hyprland_layout, &config_layouts).await
+    {
+        let _ = tx.try_send(ModuleUpdate {
+            module_id: "keyboard".into(),
+            label,
+        });
+        let _ = wakeup.lock().unwrap().write_all(&[0u8]);
+    }
+
     let mut listener = AsyncEventListener::new();
 
     let tx_c = Arc::clone(&tx);
     let wakeup_c = Arc::clone(&wakeup);
     let xkb_c = Arc::clone(&xkb_layouts);
+    let last_c = Arc::clone(&last_hyprland_layout);
     let cfg_c = Arc::clone(&config_layouts);
     listener.add_layout_changed_handler(move |data: LayoutEvent| {
         let tx = Arc::clone(&tx_c);
         let wakeup = Arc::clone(&wakeup_c);
         let xkb = Arc::clone(&xkb_c);
+        let last = Arc::clone(&last_c);
         let cfg = Arc::clone(&cfg_c);
         Box::pin(async move {
-            // Map Hyprland's layout name to a group index via the parsed xkb names,
-            // then pick the user's config label for that group.
+            *last.write().unwrap() = Some(data.layout_name.clone());
             let label = {
                 let xkb = xkb.read().unwrap();
-                let idx = xkb.iter().position(|n| n == &data.layout_name);
-                match idx {
-                    Some(i) => crate::modules::keyboard::current_label(&xkb, &cfg, i as u32),
-                    None => {
-                        tracing::warn!(
-                            hyprland_name = %data.layout_name,
-                            xkb_layouts = ?*xkb,
-                            "keyboard layout not found in XKB names; using raw Hyprland name"
-                        );
-                        data.layout_name.clone()
-                    }
-                }
+                resolve_keyboard_label(&data.layout_name, &xkb, &cfg)
             };
             let _ = tx.try_send(ModuleUpdate {
                 module_id: "keyboard".into(),
@@ -536,6 +577,12 @@ struct KeyboardWlState {
     active_group: u32,
     /// Display labels from config (`[keyboard].layouts`); index matches XKB group order.
     config_layouts: Vec<String>,
+    /// Last raw Hyprland layout name received (e.g. "English (US)").
+    /// Shared with the Hyprland task; written on every layout fetch/event so the
+    /// wl_keyboard Keymap handler can re-resolve it to a config label once
+    /// xkb_layouts is populated.
+    #[cfg(feature = "hyprland")]
+    last_hyprland_layout: Arc<RwLock<Option<String>>>,
 }
 
 #[cfg(feature = "keyboard")]
@@ -1161,29 +1208,61 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
                     .collect();
                 debug!(xkb_layouts = ?layouts, "parsed XKB keyboard layout names");
                 *state.kb.xkb_layouts.write().unwrap() = layouts;
-                let label = state.kb.current_label();
-                if let Err(e) = state.apply_update(
-                    ModuleUpdate {
-                        module_id: "keyboard".into(),
-                        label,
-                    },
-                    qh,
-                ) {
-                    warn!(error = %e, "keyboard keymap repaint failed");
+                // With the hyprland feature, the keyboard task owns the label.
+                // xkb_layouts is populated here for the first time; re-resolve the
+                // last known raw Hyprland layout name so the initial label shows the
+                // correct config label instead of the raw XKB name.
+                #[cfg(feature = "hyprland")]
+                {
+                    let raw = state.kb.last_hyprland_layout.read().unwrap().clone();
+                    if let Some(raw_name) = raw {
+                        let xkb = state.kb.xkb_layouts.read().unwrap();
+                        let label = resolve_keyboard_label(
+                            &raw_name,
+                            &xkb,
+                            &state.kb.config_layouts,
+                        );
+                        drop(xkb);
+                        if let Err(e) = state.apply_update(
+                            ModuleUpdate {
+                                module_id: "keyboard".into(),
+                                label,
+                            },
+                            qh,
+                        ) {
+                            warn!(error = %e, "keyboard keymap repaint failed");
+                        }
+                    }
+                }
+                #[cfg(not(feature = "hyprland"))]
+                {
+                    let label = state.kb.current_label();
+                    if let Err(e) = state.apply_update(
+                        ModuleUpdate {
+                            module_id: "keyboard".into(),
+                            label,
+                        },
+                        qh,
+                    ) {
+                        warn!(error = %e, "keyboard keymap repaint failed");
+                    }
                 }
             }
             wl_keyboard::Event::Modifiers { group, .. } => {
                 // Only received when the bar surface has keyboard focus.
                 state.kb.active_group = group;
-                let label = state.kb.current_label();
-                if let Err(e) = state.apply_update(
-                    ModuleUpdate {
-                        module_id: "keyboard".into(),
-                        label,
-                    },
-                    qh,
-                ) {
-                    warn!(error = %e, "keyboard modifiers repaint failed");
+                #[cfg(not(feature = "hyprland"))]
+                {
+                    let label = state.kb.current_label();
+                    if let Err(e) = state.apply_update(
+                        ModuleUpdate {
+                            module_id: "keyboard".into(),
+                            label,
+                        },
+                        qh,
+                    ) {
+                        warn!(error = %e, "keyboard modifiers repaint failed");
+                    }
                 }
             }
             _ => {}
