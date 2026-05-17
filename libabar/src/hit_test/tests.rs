@@ -81,3 +81,10 @@ fn hit_test_misses_outside_bar() {
     let bar = sample_bar();
     assert!(hit_test(&bar, 200.0, 200.0).is_none());
 }
+
+#[test]
+fn hit_test_misses_gap_between_segments_in_group() {
+    // x=346 falls in the horizontal gap between kb (312..342) and tray (350..382)
+    let bar = sample_bar();
+    assert!(hit_test(&bar, 346.0, 16.0).is_none());
+}

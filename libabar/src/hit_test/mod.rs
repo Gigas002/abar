@@ -22,9 +22,6 @@ pub fn segment_coords_at(computed: &ComputedBar, x: f64, y: f64) -> Option<(usiz
         {
             return Some((island_idx, seg_idx));
         }
-        if !island.segments.is_empty() {
-            return Some((island_idx, 0));
-        }
     }
     None
 }
@@ -49,8 +46,6 @@ pub fn hit_test(computed: &ComputedBar, x: f64, y: f64) -> Option<&PlacedSegment
         {
             return Some(segment);
         }
-
-        return island.segments.first();
     }
     None
 }
