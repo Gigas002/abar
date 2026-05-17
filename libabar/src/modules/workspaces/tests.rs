@@ -77,11 +77,23 @@ fn workspace_at_x_plain_text_hits_each_workspace() {
         workspaces: vec![ws(1, "1"), ws(2, "2"), ws(3, "3")],
         active_id: 2,
     };
-    assert_eq!(workspace_at_x(15.0, 0.0, 100.0, &state, false, &fixed), Some(1));
-    assert_eq!(workspace_at_x(50.0, 0.0, 100.0, &state, false, &fixed), Some(2));
-    assert_eq!(workspace_at_x(82.0, 0.0, 100.0, &state, false, &fixed), Some(3));
+    assert_eq!(
+        workspace_at_x(15.0, 0.0, 100.0, &state, false, &fixed),
+        Some(1)
+    );
+    assert_eq!(
+        workspace_at_x(50.0, 0.0, 100.0, &state, false, &fixed),
+        Some(2)
+    );
+    assert_eq!(
+        workspace_at_x(82.0, 0.0, 100.0, &state, false, &fixed),
+        Some(3)
+    );
     // Between workspaces (separator region) → None
-    assert_eq!(workspace_at_x(30.0, 0.0, 100.0, &state, false, &fixed), None);
+    assert_eq!(
+        workspace_at_x(30.0, 0.0, 100.0, &state, false, &fixed),
+        None
+    );
 }
 
 #[test]
@@ -94,15 +106,27 @@ fn workspace_at_x_markup_mode_uses_plain_names() {
         workspaces: vec![ws(1, "1"), ws(2, "2"), ws(3, "3")],
         active_id: 1,
     };
-    assert_eq!(workspace_at_x(14.0, 0.0, 80.0, &state, true, &fixed), Some(1));
-    assert_eq!(workspace_at_x(40.0, 0.0, 80.0, &state, true, &fixed), Some(2));
-    assert_eq!(workspace_at_x(64.0, 0.0, 80.0, &state, true, &fixed), Some(3));
+    assert_eq!(
+        workspace_at_x(14.0, 0.0, 80.0, &state, true, &fixed),
+        Some(1)
+    );
+    assert_eq!(
+        workspace_at_x(40.0, 0.0, 80.0, &state, true, &fixed),
+        Some(2)
+    );
+    assert_eq!(
+        workspace_at_x(64.0, 0.0, 80.0, &state, true, &fixed),
+        Some(3)
+    );
 }
 
 #[test]
 fn workspace_at_x_empty_state_returns_none() {
     let state = WorkspacesDisplayState::default();
-    assert_eq!(workspace_at_x(10.0, 0.0, 100.0, &state, false, &fixed), None);
+    assert_eq!(
+        workspace_at_x(10.0, 0.0, 100.0, &state, false, &fixed),
+        None
+    );
 }
 
 #[test]

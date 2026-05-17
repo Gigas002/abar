@@ -291,14 +291,15 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 ### Phase 6 — Compositor modules (`workspaces`, `window`)
 
 - [x] **`workspaces`**: behind **`hyprland`** feature; Hyprland IPC via `AsyncEventListener` (workspace changed/added/deleted/moved); Pango markup for `active_color` / `inactive_color` from theme; `visibility_mode = "monitor_specific"` filters to active monitor's workspaces; compositor-agnostic `format_label` + `WorkspacesConfig` in `libabar`; `use_markup` flag added to `Segment` / `PlacedSegment` for color-differentiated workspace rendering.
-- [ ] **`window`**: active title, ellipsis, compositor feature (not yet implemented).
+- [x] **`window`**: active title, ellipsis, compositor feature; `WindowConfig { max_length }` in `libabar`; Hyprland `AsyncEventListener` (`add_active_window_changed_handler`) + `Client::get_active_async()` for initial title; `truncate_title` helper with Unicode scalar-value counting; optional `max_length` in `[window]` config (default 50, 0 = no limit).
 
 **Verify**: manual on Hyprland; mocked JSON/socket tests where feasible.
 
 ### Phase 7 — **Tray** (must-have): `zbus` + StatusNotifier host
 
+- [ ] implement custom menu drawing (must follow theme, simple surface with list of text buttons?)
 - [ ] Implement tray host and item rendering (**StatusNotifier pixmaps** via shared **icon** / image path from Phase 4, attention state, **simple** menu exposure if required by spec — still drawn with Cairo/Pango or delegated only via user-spawned commands per product rules in §1.3; **no** iced menus).
-- [ ] All D-Bus via **`zbus`**; gate in **`tray`** feature with **default-on** for the `abar` binary.
+- [ ] All D-Bus via **`zbus`**; gate in **`tray`** feature.
 - [ ] Use **ashell** source as a **semantic** reference for registration names, watcher protocol, and edge cases; do not copy iced-dependent UI.
 
 **Verify**: manual with real tray apps; unit tests for protocol parsing/state where possible; CI strategy for headless D-Bus documented if tests are skipped.
@@ -354,13 +355,14 @@ Update this plan when:
 
 ## Revision history
 
-| Date       | Change                                                                                                                                                                    |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                                                                                  |
-| 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release                                                         |
-| 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                                                                                 |
-| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                                                                         |
-| 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                                                                              |
-| 2026-05-16 | **Phase 5** keyboard: no built-in switching; hyprland feature = event socket, otherwise wl_keyboard + libxkbcommon                                                        |
-| 2026-05-16 | **Phase 5** implemented: clock (chrono + chrono-tz, minute tick), keyboard (hyprland socket / xkb / static), poll loop replaces blocking_dispatch; xkb = separate feature |
+| Date       | Change                                                                                                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                                                                                                   |
+| 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release                                                                          |
+| 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                                                                                                  |
+| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                                                                                          |
+| 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                                                                                               |
+| 2026-05-16 | **Phase 5** keyboard: no built-in switching; hyprland feature = event socket, otherwise wl_keyboard + libxkbcommon                                                                         |
+| 2026-05-16 | **Phase 5** implemented: clock (chrono + chrono-tz, minute tick), keyboard (hyprland socket / xkb / static), poll loop replaces blocking_dispatch; xkb = separate feature                  |
 | 2026-05-16 | **Phase 6** workspaces: `use_markup` on Segment/PlacedSegment; Pango markup rendering path; Hyprland IPC via AsyncEventListener; monitor-specific filter; compositor-agnostic format_label |
+| 2026-05-17 | **Phase 6** window: `WindowConfig { max_length }` + `truncate_title`; Hyprland `add_active_window_changed_handler`; optional `[window] max_length` config; pre-existing dead_code fixed    |

@@ -43,4 +43,8 @@ pub struct Workspaces {
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
-pub struct Window {}
+pub struct Window {
+    pub max_length: Option<usize>,
+    #[serde(flatten)]
+    pub events: Option<Events>,
+}

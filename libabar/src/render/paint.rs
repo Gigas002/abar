@@ -107,12 +107,7 @@ pub fn paint_computed(
 
                 let n = island.segments.len();
                 for (seg_idx, seg) in island.segments.iter().enumerate() {
-                    let bg = seg_bg(
-                        spec,
-                        Some((island_idx, seg_idx)),
-                        hover_seg,
-                        active_seg,
-                    );
+                    let bg = seg_bg(spec, Some((island_idx, seg_idx)), hover_seg, active_seg);
                     if bg == spec.colors.background {
                         continue;
                     }

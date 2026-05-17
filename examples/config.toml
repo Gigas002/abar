@@ -59,6 +59,10 @@ right = [
     ],
 ]
 
+[window]
+# Maximum number of characters to show before truncating with "…". 0 = no limit.
+max_length = 50
+
 [keyboard]
 layouts = ["en-US", "ru-RU"]
 on_left_click = "hyprctl switchxkblayout all next"

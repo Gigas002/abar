@@ -1,7 +1,12 @@
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
-#[cfg(any(feature = "clock", feature = "keyboard", feature = "workspaces"))]
+#[cfg(any(
+    feature = "clock",
+    feature = "keyboard",
+    feature = "workspaces",
+    feature = "window"
+))]
 use std::sync::Arc;
 #[cfg(any(feature = "keyboard", feature = "workspaces"))]
 use std::sync::RwLock;
@@ -167,6 +172,28 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
             })?;
             let ws_state = Arc::clone(&state.workspaces_state);
             spawn::ensure_runtime()?.spawn(hyprland_workspaces_task(tx, wakeup, ws_cfg, ws_state));
+        }
+    }
+
+    // Spawn a Hyprland active-window listener when the window feature is active.
+    #[cfg(feature = "window")]
+    if let Some(window_cfg) = modules.window {
+        let has_window = state
+            .spec
+            .layout
+            .left
+            .iter()
+            .chain(state.spec.layout.center.iter())
+            .chain(state.spec.layout.right.iter())
+            .flat_map(|island| island.segments.iter())
+            .any(|seg| seg.module_id == "window");
+        if has_window {
+            let tx = updates_tx.clone();
+            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
+                path: "/dev/null".into(),
+                source,
+            })?;
+            spawn::ensure_runtime()?.spawn(hyprland_window_task(tx, wakeup, window_cfg));
         }
     }
 
@@ -548,6 +575,66 @@ async fn fetch_workspace_label(
     Some(label)
 }
 
+// ---------------------------------------------------------------------------
+// Hyprland window background task
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "window")]
+async fn hyprland_window_task(
+    tx: mpsc::SyncSender<ModuleUpdate>,
+    wakeup: UnixStream,
+    config: crate::modules::window::WindowConfig,
+) {
+    use hyprland::data::Client;
+    use hyprland::event_listener::{AsyncEventListener, WindowEventData};
+    use hyprland::shared::HyprDataActiveOptional;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    let config = Arc::new(config);
+    let tx = Arc::new(tx);
+    let wakeup = Arc::new(Mutex::new(wakeup));
+
+    // Send the initial active window title before listening for events.
+    let initial_label = Client::get_active_async()
+        .await
+        .ok()
+        .flatten()
+        .map(|c| crate::modules::window::truncate_title(&c.title, config.max_length))
+        .unwrap_or_default();
+    let _ = tx.try_send(ModuleUpdate {
+        module_id: "window".to_string(),
+        label: initial_label,
+    });
+    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
+
+    let mut listener = AsyncEventListener::new();
+
+    {
+        let cfg = Arc::clone(&config);
+        let tx = Arc::clone(&tx);
+        let wakeup = Arc::clone(&wakeup);
+        listener.add_active_window_changed_handler(move |data: Option<WindowEventData>| {
+            let label = data
+                .map(|w| crate::modules::window::truncate_title(&w.title, cfg.max_length))
+                .unwrap_or_default();
+            let tx = Arc::clone(&tx);
+            let wakeup = Arc::clone(&wakeup);
+            Box::pin(async move {
+                let _ = tx.try_send(ModuleUpdate {
+                    module_id: "window".to_string(),
+                    label,
+                });
+                let _ = wakeup.lock().unwrap().write_all(&[0u8]);
+            })
+        });
+    }
+
+    if let Err(e) = listener.start_listener_async().await {
+        tracing::warn!(error = %e, "hyprland window listener stopped");
+    }
+}
+
 /// Switch to a Hyprland workspace by numeric ID via the Lua dispatcher.
 ///
 /// Hyprland's Lua dispatcher wraps the IPC payload as `return hl.dispatch(<payload>)`.
@@ -585,7 +672,7 @@ struct KeyboardWlState {
     last_hyprland_layout: Arc<RwLock<Option<String>>>,
 }
 
-#[cfg(feature = "keyboard")]
+#[cfg(all(feature = "keyboard", not(feature = "hyprland")))]
 impl KeyboardWlState {
     fn current_label(&self) -> String {
         let xkb = self.xkb_layouts.read().unwrap();
@@ -781,8 +868,7 @@ impl AppState {
                         &state,
                         use_markup,
                         &|text| font.measure(text),
-                    )
-                        && let Err(e) = hyprland_switch_workspace(id)
+                    ) && let Err(e) = hyprland_switch_workspace(id)
                     {
                         warn!(error = %e, workspace = id, "failed to switch workspace");
                     }
@@ -1074,12 +1160,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 if btn_state == WEnum::Value(ButtonState::Pressed) {
                     state.pointer.pressed = state.pointer.hovered;
                     if let Some(shm) = state.shm.clone()
-                        && let Err(e) = state.resize_and_paint(
-                            &shm,
-                            qh,
-                            state.bar_width,
-                            state.bar_height,
-                        )
+                        && let Err(e) =
+                            state.resize_and_paint(&shm, qh, state.bar_width, state.bar_height)
                     {
                         warn!(error = %e, "press repaint failed");
                     }
@@ -1097,12 +1179,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 {
                     state.pointer.pressed = None;
                     if let Some(shm) = state.shm.clone()
-                        && let Err(e) = state.resize_and_paint(
-                            &shm,
-                            qh,
-                            state.bar_width,
-                            state.bar_height,
-                        )
+                        && let Err(e) =
+                            state.resize_and_paint(&shm, qh, state.bar_width, state.bar_height)
                     {
                         warn!(error = %e, "release repaint failed");
                     }
@@ -1217,11 +1295,8 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
                     let raw = state.kb.last_hyprland_layout.read().unwrap().clone();
                     if let Some(raw_name) = raw {
                         let xkb = state.kb.xkb_layouts.read().unwrap();
-                        let label = resolve_keyboard_label(
-                            &raw_name,
-                            &xkb,
-                            &state.kb.config_layouts,
-                        );
+                        let label =
+                            resolve_keyboard_label(&raw_name, &xkb, &state.kb.config_layouts);
                         drop(xkb);
                         if let Err(e) = state.apply_update(
                             ModuleUpdate {

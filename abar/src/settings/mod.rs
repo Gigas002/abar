@@ -162,6 +162,18 @@ fn build_module_configs(
         Some(cfg)
     };
 
+    #[cfg(feature = "window")]
+    let window = {
+        use libabar::modules::window::WindowConfig;
+        let max_length = _config
+            .window
+            .as_ref()
+            .and_then(|w| w.max_length)
+            .unwrap_or(50);
+        set_segment_label(_layout, "window", "");
+        Some(WindowConfig { max_length })
+    };
+
     ModuleConfigs {
         #[cfg(feature = "clock")]
         clock,
@@ -169,10 +181,17 @@ fn build_module_configs(
         keyboard,
         #[cfg(feature = "workspaces")]
         workspaces,
+        #[cfg(feature = "window")]
+        window,
     }
 }
 
-#[cfg(any(feature = "clock", feature = "keyboard", feature = "workspaces"))]
+#[cfg(any(
+    feature = "clock",
+    feature = "keyboard",
+    feature = "workspaces",
+    feature = "window"
+))]
 fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
     for island in layout
         .left
