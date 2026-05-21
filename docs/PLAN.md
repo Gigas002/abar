@@ -31,7 +31,7 @@ It mirrors the **execution discipline** of `wau/docs/WAU_RS_PLAN.md`:
 
 - **Library-first**: **`libabar`** — layout math, module trait/state, spawn helpers, Wayland protocol glue that is testable without config file formats; **`abar`** — `main` (tracing, CLI, read config/theme TOML, run loop).
 - **`abar` contains no domain logic** beyond wiring; **`libabar` does not depend on clap** or **toml** and does not assume a specific logger implementation beyond `tracing`.
-- **Tokio for async work**: use **[`tokio`](https://crates.io/crates/tokio)** as the standard runtime for background tasks — config event commands (`tokio::process`), later compositor IPC, tray D-Bus, and timers. The Wayland client loop stays **synchronous** on the main thread (`blocking_dispatch`); never block it on subprocess or socket I/O — offload with `tokio::spawn` (and `spawn_blocking` only when a sync API is unavoidable).
+- **Tokio for async work**: use **[`tokio`](https://crates.io/crates/tokio)** as the standard runtime for background tasks — config event commands (`tokio::process`), long-running `exec` scripts (stdout line reader per module), and timers. The Wayland client loop stays **synchronous** on the main thread (`blocking_dispatch`); never block it on subprocess or socket I/O — offload with `tokio::spawn` (and `spawn_blocking` only when a sync API is unavoidable).
 - **Step sizing**: small PR-sized phases with explicit **Verify** blocks.
 - **Feature matrix in CI**: default, `--all-features`, `--no-default-features` (core must still build: e.g. bar shell + clock-only or stub modules — define explicitly in Phase 0). **Tray** is part of the first shippable bar; **MPRIS** is explicitly **not** in that milestone (see §8 post-first-release).
 - **Naming**: short, descriptive; prefer clarity over abstraction depth.
@@ -41,6 +41,7 @@ It mirrors the **execution discipline** of `wau/docs/WAU_RS_PLAN.md`:
 
 - **No** first-party popovers, settings panels, Wi-Fi/BT/audio “applets”, calendar UI, or **any** in-process menu widgets.
 - **No** iced / winit / egui / Qt / GTK windowing for the bar.
+- **No** D-Bus, compositor IPC, or media IPC libraries inside abar: `zbus`, `dbus`, `hyprland-rs`, `niri-ipc`, `libxkbcommon`, and equivalents are **banned** from `libabar` and `abar`. All such state (workspaces, active window, keyboard layout, tray items, media info) is pushed by **external daemons or scripts** over the abar IPC socket (see §5.2–5.4, §8 Phase 7–8).
 - **Tempo**, **Privacy**, embedded **Settings** modules, **weather in clock strip**, etc. from `ashell_config.toml` — **out of scope** unless reintroduced later as **optional** features with **external** commands only.
 - **No** promise of pixel-perfect ashell clone; target is **similar** islands + colors + font from examples.
 
@@ -96,8 +97,12 @@ abar/                          # workspace root (already exists)
       settings/
         mod.rs                 # merged view: cli > env > config (later)
         tests.rs
+  scripts/                       # example exec scripts (reference implementations)
+    keyboard.sh                # Hyprland keyboard layout → {"text": "…"}
+    # workspaces.sh, window.sh — to be added in Phase 8
   docs/
     PLAN.md                    # this file
+    EXEC.md                    # exec JSON model + script contract (Phase 7)
   .github/workflows/           # already scaffolded — extend as in §7
 ```
 
@@ -168,41 +173,58 @@ abar/                          # workspace root (already exists)
 
 ### 5.2 Compositor-specific **feature** modules
 
-Each backend behind its own feature so CI and minimal users do not link unused IPC. **Near-term target:** **Hyprland only** for `workspaces` / `window` (IPC for tags/workspaces and active window title). Additional compositors are **out of scope until explicitly planned** — each future compositor remains **its own Cargo feature** and module set (same rule as WAU §2.2).
+**Architecture decision (issue #8):** abar does **not** depend on any compositor IPC library. Compositor state is delivered by **user-provided scripts** configured via an `exec` field on each module. abar spawns the script as a long-running child process and reads newline-delimited JSON from its stdout; the script is the thick layer that handles all compositor-specific logic (e.g. `hyprctl`, `socat`, Hyprland event socket). See `scripts/keyboard.sh` for a reference implementation.
 
-| Feature (example name) | Responsibility                                                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `hyprland`             | Hyprland IPC: workspaces, active window title (hyprland-rs or hand-rolled Unix socket — pick smallest dep that fits policy) |
+- `workspaces`, `window`, `keyboard` are **exec-handler modules**: they hold state and render it; they have no knowledge of how the data arrives.
+- The script decides what compositor to talk to, what events to subscribe to, and how to map raw compositor data to the abar JSON model — abar just reads lines.
+- **No** `hyprland`, `xkb`, or compositor-named Cargo features remain in `libabar` after Phase 8 refactoring.
 
-**Rule:** no compositor-specific code in `workspaces` / `window` without the matching feature; either stub (“inactive”) or omit modules at compile time.
+| What was            | What it becomes after Phase 8                                                     |
+| ------------------- | --------------------------------------------------------------------------------- |
+| `hyprland` feature  | **Removed**; logic moves into a user script (e.g. `scripts/keyboard.sh`)          |
+| `xkb` feature       | **Removed**; keyboard layout read from script stdout                              |
+| `workspaces` module | exec-handler: pure state sink + render; `exec` field in config drives updates     |
+| `window` module     | exec-handler: pure state sink + render; `exec` field in config drives updates     |
+| `keyboard` module   | exec-handler: pure state sink + render; `exec` field in config drives updates     |
 
 ### 5.3 Tray (**must-have** for first shippable milestone)
 
-- **Required** for the first working release in this plan: system tray in the bar (same user expectation as **ashell**). **ashell**’s tray implementation is a useful **behavioral reference** (StatusNotifier host, item lifecycle, menus exposed over D-Bus) even though ashell’s **UI** stack is iced — abar reimplements **host + rendering** with **Cairo + Pango** only.
-- **D-Bus:** use **native Rust** [**zbus**](https://crates.io/crates/zbus) (and the usual pure-Rust ecosystem around it). **Do not** depend on `libdbus` / `dbus-glib` C libraries for tray or future media features.
-- Isolate all D-Bus I/O behind a **`tray` feature** in `libabar` with `abar` passthrough so `--no-default-features` CI stays meaningful, but **default `abar` binary** should include tray (first milestone assumes tray on).
+- **Required** for the first working release. No D-Bus / `zbus` inside abar. Architecture for how tray data reaches abar is **TBD** (under design — see Phase 9).
 
-### 5.4 MPRIS (deferred — see §8 post-first-release)
+### 5.4 MPRIS
 
-- **Not** required for the first working draft or v0 definition of done. When added later, use **`zbus`** only (same policy as §5.3); keep behind a dedicated **`mpris`** feature.
+- Implemented as an **exec-handler module**: a user script (e.g. wrapping **`playerctl`**) outputs JSON lines to stdout; abar reads and renders. No `zbus`, no `libdbus`, no D-Bus code inside abar.
+- Keep behind a dedicated **`mpris`** feature; deferred to post-first-release (see §8).
 
 ---
 
 ## 6. Module catalog (compile-time)
 
-Each built-in module: **`libabar/src/modules/<name>/`** + **`tests.rs`**, gated by **`features.<name>`**.
+Modules are split into three tiers (issue #8):
 
-| Module       | First-milestone scope                                | Notes                                                                           |
-| ------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `clock`      | timezones + format cycle + optional `on_left_click`  | no GUI calendar — external command only                                         |
-| `keyboard`   | layout switch + labels from config                   | optional override clicks                                                        |
-| `workspaces` | compositor feature (`hyprland` first)                | monitor filter per theme `visibility_mode`                                      |
-| `window`     | active title                                         | ellipsis, compositor feature                                                    |
-| `tray`       | **required** — StatusNotifier-style host, **`zbus`** | behavior reference: **ashell** (not UI stack); no libdbus                       |
-| `custom`     | icon + events                                        | **icon paint in Phase 4** — config `icon` parsed today but not shown until then |
-| `mpris`      | **post-first-release** (§8)                          | track/artist via **`zbus`** when implemented                                    |
+**Tier 1 — Built-in**: self-contained logic inside abar, no external daemon needed.
 
-**Custom modules**: unique name, **icon name** required (FreeDesktop). Without **Phase 4** they appear as placeholder **text** (module name) and are not usable as designed. After Phase 4: missing icon at startup → **structured error** in `abar` (per `examples/config.toml`).
+| Module  | Scope                                               | Notes           |
+| ------- | --------------------------------------------------- | --------------- |
+| `clock` | timezones + format cycle + optional `on_left_click` | no GUI calendar |
+
+**Tier 2 — Custom**: user-defined icon + fire-and-forget click actions. No daemon; config-only.
+
+| Module   | Scope         | Notes                                                                              |
+| -------- | ------------- | ---------------------------------------------------------------------------------- |
+| `custom` | icon + events | **icon paint in Phase 4** — config `icon` parsed today but not shown until Phase 4 |
+
+**Tier 3 — exec-handler modules**: abar spawns a user-configured script (`exec` field in config) as a long-running child process and reads newline-delimited JSON from its stdout. The script owns all compositor/IPC/D-Bus logic; abar owns only the JSON model + rendering. No compositor IPC libs inside abar.
+
+| Module       | Scope after Phase 8 refactor                                              | Notes                                                 |
+| ------------ | ------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `keyboard`   | display layout label; reads `{"text": "…"}` lines from `exec` script     | replaces `hyprland` event socket + `xkb` feature      |
+| `workspaces` | display workspace list; reads JSON lines from `exec` script               | replaces `hyprland` feature; monitor filter via theme |
+| `window`     | display active title (ellipsis); reads `{"text": "…"}` from `exec` script | replaces `hyprland` active-window handler             |
+| `tray`       | **TBD** — architecture under design                                       | Phase 9; no D-Bus/zbus in abar                        |
+| `mpris`      | **post-first-release** — reads JSON from a `playerctl`-based script       | no D-Bus/zbus in abar                                 |
+
+**Custom modules**: unique name, **icon name** required (FreeDesktop). After Phase 4: missing icon at startup → **structured error** in `abar`.
 
 ---
 
@@ -295,24 +317,47 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 **Verify**: manual on Hyprland; mocked JSON/socket tests where feasible.
 
-### Phase 7 — **Tray** (must-have): `zbus` + StatusNotifier host
+### Phase 7 — exec-handler infrastructure + JSON models
 
-- [ ] Implement tray host and item rendering (**StatusNotifier pixmaps** via shared **icon** / image path from Phase 4, attention state, **simple** menu exposure if required by spec — still drawn with Cairo/Pango or delegated only via user-spawned commands per product rules in §1.3; **no** iced menus).
-- [ ] All D-Bus via **`zbus`**; gate in **`tray`** feature.
-- [ ] Use **ashell** source as a **semantic** reference for registration names, watcher protocol, and edge cases; do not copy iced-dependent UI.
+> **Motivation (issue #8):** remove all compositor IPC libs from abar. Each exec-handler module spawns a user script and reads newline-delimited JSON from its stdout. This phase builds the generic machinery before Phase 8 swaps out the module internals.
 
-**Verify**: manual with real tray apps; unit tests for protocol parsing/state where possible; CI strategy for headless D-Bus documented if tests are skipped.
+- [x] **JSON model**: define a shared `ModuleUpdate` type (in `libabar/src/model/` or per-module) — minimum: `{ "text": String }`. Optional fields (to be extended per module as needed): `"icon": String` (FreeDesktop name or path), `"markup": bool` (treat `text` as Pango markup). Serialize/deserialize via `serde_json`; unknown fields ignored.
+- [x] **`libabar/src/exec/`**: Tokio task that spawns a configured command (`sh -c <exec_string>`) as a child process, reads lines from stdout, deserializes each as `ModuleUpdate`, and sends it over a `tokio::sync::watch` or `mpsc` channel to the module state. Restarts the script on unexpected exit (with backoff + tracing warning). Forwards stdin writes from abar for back-channel signals (reserved for future use; not required now).
+- [x] **Module trait**: gains `fn apply_update(&mut self, update: ModuleUpdate)` — exec-handler modules implement this to update their held state; built-in modules (`clock`) do not need it.
+- [x] **Config**: each exec-handler module config gains an `exec: Option<String>` field; if absent the module renders a static placeholder.
+- [x] Add `scripts/` dir to repo with `keyboard.sh` as the reference implementation; document the JSON model and exec contract in `docs/EXEC.md`.
 
-### Phase 8 — Polish + first release
+**Verify**: unit test — spawn a trivial script that emits `{"text": "hello"}` and exits; assert `ModuleUpdate` is received on the channel; no Wayland required.
 
-- [ ] README: install deps (cairo, pango, wayland, icon theme), feature flags matrix, example screenshots.
+### Phase 8 — Refactor compositor modules + keyboard to exec-handlers
+
+> **Removes** all direct compositor IPC from abar (`hyprland-rs`, `niri-ipc`, `libxkbcommon`). After this phase, `libabar` has no compositor-named features; all three modules read state from their `exec` script via the Phase 7 infrastructure.
+
+- [ ] **`keyboard`**: delete `hyprland` event-socket path and `xkb` feature path; module holds `current_layout: String`, updated via `apply_update` from exec script stdout; static placeholder if `exec` is absent.
+- [ ] **`workspaces`**: delete `hyprland` feature wiring (`AsyncEventListener`, `hyprland-rs` dep); module receives `ModuleUpdate` from exec script; `visibility_mode` and Pango markup rendering stay (script is responsible for emitting pre-formatted markup in `text` with `"markup": true`).
+- [ ] **`window`**: delete Hyprland `add_active_window_changed_handler` + `Client::get_active_async()`; module receives `ModuleUpdate` from exec script; `truncate_title` + `max_length` stay unchanged (applied after receiving `text`).
+- [ ] Remove `hyprland` and `xkb` features from `libabar/Cargo.toml`; update `abar/Cargo.toml` passthroughs; scrub feature matrix in CI.
+- [ ] `hyprland-rs`, `niri-ipc`, `libxkbcommon` must not appear in `Cargo.lock`.
+- [ ] Update `examples/config.toml` with `exec` field examples for `keyboard`, `workspaces`, `window`.
+
+**Verify**: `cargo build --no-default-features` and `--all-features` both succeed; `Cargo.lock` contains neither `hyprland-rs` nor `libxkbcommon`; existing layout/render tests still pass; manual: modules show placeholder when `exec` is absent, live data when `keyboard.sh` runs.
+
+### Phase 9 — **Tray** (must-have)
+
+> Architecture is **TBD** — `trayd` is under active development. No D-Bus / `zbus` inside abar. Plan this phase once `trayd`'s interface stabilises.
+
+- [ ] _(to be defined)_
+
+### Phase 10 — Polish + first release
+
+- [ ] README: install deps (cairo, pango, wayland, icon theme), feature flags matrix, example screenshots; document the exec JSON model and link to `scripts/` examples for Hyprland workspaces/window/keyboard.
 - [ ] CHANGELOG policy; tag v0.1.0 (first working draft / first milestone).
 
 **Verify**: full §7 gates + manual dogfood against `examples/*.toml`.
 
 ### Post-first-release — `mpris` (optional enhancement)
 
-- [ ] **After** Phase 8 ships: add **`mpris`** module behind **`mpris`** feature using **`zbus`** only (no libdbus); polling or signals with a conservative rate limit so the Wayland loop stays responsive.
+- [ ] **After** Phase 10 ships: add **`mpris`** module as an exec-handler — a user script (e.g. wrapping `playerctl`) emits `{"text": "Artist — Title"}` (or richer fields) to stdout; abar reads and renders. No `zbus` or D-Bus code in abar.
 - [ ] Not part of the first milestone’s definition of done (§9).
 
 **Verify**: dbus test harness or documented CI skip with local manual checklist.
@@ -322,12 +367,13 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 ## 9. Definition of done (v0 / first working draft)
 
 - [ ] Bar shows on Wayland with **islands** matching theme from `examples/theme.toml`.
-- [ ] Layout from `examples/config.toml` works for **clock**, **keyboard**, **`[modules].custom`** (FreeDesktop **icons** visible — Phase 4), **tray**, and **Hyprland**-backed **workspaces + window** (document any gaps vs ashell).
-- [ ] **Tray** works with real StatusNotifier items via **`zbus`** (no libdbus).
-- [ ] **MPRIS** is **not** required for this milestone (planned in §8 post-first-release).
-- [ ] Pointer actions spawn user commands; built-in clock/keyboard behaviors work without GUIs.
+- [ ] Layout from `examples/config.toml` works for **clock**, **keyboard**, **`[modules].custom`** (FreeDesktop **icons** visible — Phase 4), **tray**, **workspaces**, and **window**.
+- [ ] `workspaces`, `window`, `keyboard` are **exec-handler modules**: no `hyprland-rs` / `libxkbcommon` in `Cargo.lock`; state arrives via stdout from a user `exec` script; `scripts/` contains working Hyprland examples.
+- [ ] **Tray** works as designed once Phase 9 is defined; no `zbus` or D-Bus in abar.
+- [ ] **MPRIS** is **not** required for this milestone (planned post-Phase 10).
+- [ ] Pointer actions spawn user commands; built-in clock behavior works without GUIs.
 - [ ] **No** iced / winit for bar UI; Cairo+Pango drawing path is live.
-- [ ] CI green on default / all-features / no-default-features; docs build.
+- [ ] CI green on default / all-features / no-default-features; docs build; no banned deps in lock file.
 
 ---
 
@@ -337,7 +383,8 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 - **Versions**: `x.y` or `x` in manifests; lockfile committed.
 - **Health**: avoid archived / unmaintained crates.
 - **Async runtime**: **`tokio`** (`rt-multi-thread`, `process`, `time`, …) in **`libabar`** — standard for parallel background work; keep the dependency lean (no full workspace stack unless a phase needs it).
-- **Heavy deps**: justify in PR (e.g. **`zbus`** for **tray** and later **MPRIS**); keep unused code paths behind features.
+- **Banned deps**: `zbus`, `dbus`, `libdbus`, `dbus-glib`, `hyprland-rs`, `niri-ipc`, `libxkbcommon` — none of these may appear in `Cargo.lock`. All D-Bus and compositor IPC lives in external daemons.
+- **Heavy deps**: justify in PR; keep unused code paths behind features.
 
 ---
 
@@ -354,14 +401,17 @@ Update this plan when:
 
 ## Revision history
 
-| Date       | Change                                                                                                                                                                                     |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                                                                                                   |
-| 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release                                                                          |
-| 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                                                                                                  |
-| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                                                                                          |
-| 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                                                                                               |
-| 2026-05-16 | **Phase 5** keyboard: no built-in switching; hyprland feature = event socket, otherwise wl_keyboard + libxkbcommon                                                                         |
-| 2026-05-16 | **Phase 5** implemented: clock (chrono + chrono-tz, minute tick), keyboard (hyprland socket / xkb / static), poll loop replaces blocking_dispatch; xkb = separate feature                  |
-| 2026-05-16 | **Phase 6** workspaces: `use_markup` on Segment/PlacedSegment; Pango markup rendering path; Hyprland IPC via AsyncEventListener; monitor-specific filter; compositor-agnostic format_label |
-| 2026-05-17 | **Phase 6** window: `WindowConfig { max_length }` + `truncate_title`; Hyprland `add_active_window_changed_handler`; optional `[window] max_length` config; pre-existing dead_code fixed    |
+| Date       | Change                                                                                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-05-15 | Initial abar plan derived from WAU_RS_PLAN discipline + examples configs                                                                                                                                                                                                                                |
+| 2026-05-15 | Niri removed from scope; tray must-have with **zbus** + ashell semantic reference; MPRIS moved post-first-release                                                                                                                                                                                       |
+| 2026-05-15 | §1.2 code-comment rule; layout tree: no `paths/`; `libabar` has no `toml`                                                                                                                                                                                                                               |
+| 2026-05-15 | Phase 3 done; **Tokio** documented as async runtime for spawn and future IPC/tray                                                                                                                                                                                                                       |
+| 2026-05-15 | **Phase 4** added: FreeDesktop icons + visible custom modules; later phases renumbered (5–8)                                                                                                                                                                                                            |
+| 2026-05-16 | **Phase 5** keyboard: no built-in switching; hyprland feature = event socket, otherwise wl_keyboard + libxkbcommon                                                                                                                                                                                      |
+| 2026-05-16 | **Phase 5** implemented: clock (chrono + chrono-tz, minute tick), keyboard (hyprland socket / xkb / static), poll loop replaces blocking_dispatch; xkb = separate feature                                                                                                                               |
+| 2026-05-16 | **Phase 6** workspaces: `use_markup` on Segment/PlacedSegment; Pango markup rendering path; Hyprland IPC via AsyncEventListener; monitor-specific filter; compositor-agnostic format_label                                                                                                              |
+| 2026-05-17 | **Phase 6** window: `WindowConfig { max_length }` + `truncate_title`; Hyprland `add_active_window_changed_handler`; optional `[window] max_length` config; pre-existing dead_code fixed                                                                                                                 |
+| 2026-05-21 | **Architecture decision (issue #8):** ban compositor IPC libs from abar; `workspaces`/`window`/`keyboard` become IPC-handler modules (Tier 3); insert Phase 7 (IPC protocol + receiver) and Phase 8 (refactor compositor modules) before old Phase 7; renumber old 7→9, 8→10; update §1.3, §5.2, §6, §9 |
+| 2026-05-21 | **No D-Bus/zbus in abar:** `tray` becomes Tier 3 IPC handler — `trayd` owns StatusNotifier/D-Bus, pushes JSON to abar; `mpris` uses `playerctl`-based external daemon; `zbus`/`dbus` added to banned-dep list (§1.3, §5.3–5.4, §6, §9, §10)                                                             |
+| 2026-05-21 | **exec-handler model:** replace Unix socket IPC with stdout-pipe-from-child-process; `exec` field per module config; abar reads newline-delimited `ModuleUpdate { text, icon?, markup? }`; script is thick layer for compositor specifics; Phase 7 rewritten; Phase 9 (tray) marked TBD; `scripts/keyboard.sh` + `docs/EXEC.md` added to layout |
