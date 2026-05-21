@@ -68,11 +68,8 @@ fn example_config_toml_deserializes() {
             .is_some()
     );
     assert_eq!(
-        cfg.keyboard
-            .as_ref()
-            .and_then(|k| k.layouts.as_ref())
-            .map(|v| v.as_slice()),
-        Some(["en-US".to_string(), "ru-RU".to_string()].as_slice())
+        cfg.keyboard.as_ref().and_then(|k| k.exec.as_deref()),
+        Some("~/.config/abar/scripts/keyboard/hyprland_keyboard.sh")
     );
     assert_eq!(
         cfg.clock

@@ -143,13 +143,8 @@ fn build_module_configs(
     #[cfg(feature = "keyboard")]
     let keyboard = {
         use libabar::modules::keyboard::KeyboardConfig;
-        _config.keyboard.as_ref().map(|k| {
-            let layouts = k.layouts.clone().unwrap_or_default();
-            // Prime the segment with the first configured layout so it's never blank.
-            if let Some(first) = layouts.first() {
-                set_segment_label(_layout, "keyboard", first);
-            }
-            KeyboardConfig { layouts }
+        _config.keyboard.as_ref().map(|k| KeyboardConfig {
+            exec: k.exec.clone(),
         })
     };
 
@@ -164,10 +159,12 @@ fn build_module_configs(
             .unwrap_or_default();
         let active_color = theme_ws.active_color.as_deref().map(trim_alpha);
         let inactive_color = theme_ws.inactive_color.as_deref().map(trim_alpha);
+        let exec = _config.workspaces.as_ref().and_then(|w| w.exec.clone());
         let cfg = WorkspacesConfig {
             visibility_mode,
             active_color,
             inactive_color,
+            exec,
         };
         // Workspaces shows a placeholder until the background task sends the first update.
         set_segment_label(_layout, "workspaces", "...");
@@ -182,8 +179,9 @@ fn build_module_configs(
             .as_ref()
             .and_then(|w| w.max_length)
             .unwrap_or(50);
+        let exec = _config.window.as_ref().and_then(|w| w.exec.clone());
         set_segment_label(_layout, "window", "");
-        Some(WindowConfig { max_length })
+        Some(WindowConfig { max_length, exec })
     };
 
     ModuleConfigs {

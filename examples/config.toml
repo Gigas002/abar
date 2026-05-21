@@ -68,7 +68,8 @@ right = [
 max_length = 50
 
 [keyboard]
-layouts = ["en-US", "ru-RU"]
+exec = "~/.config/abar/scripts/keyboard/hyprland_keyboard.sh"
+# layouts = ["en-US", "ru-RU"]
 on_left_click = "hyprctl switchxkblayout all next"
 
 [clock]

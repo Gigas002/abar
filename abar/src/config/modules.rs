@@ -31,7 +31,7 @@ impl Modules {
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Keyboard {
-    pub layouts: Option<Vec<String>>,
+    pub exec: Option<String>,
     #[serde(flatten)]
     pub events: Option<Events>,
 }
@@ -46,6 +46,7 @@ pub struct Clock {
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Workspaces {
+    pub exec: Option<String>,
     #[serde(flatten)]
     pub events: Option<Events>,
 }
@@ -53,6 +54,7 @@ pub struct Workspaces {
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Window {
     pub max_length: Option<usize>,
+    pub exec: Option<String>,
     #[serde(flatten)]
     pub events: Option<Events>,
 }

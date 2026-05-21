@@ -11,7 +11,7 @@ description = "Wayland layer-shell bar runtime."
 [features]
 default = []
 clock = ["dep:chrono-tz"]
-keyboard = ["dep:xkbcommon"]
+keyboard = []
 tray = []
 workspaces = ["hyprland"]
 window = ["hyprland"]
@@ -26,6 +26,8 @@ pangocairo = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 chrono-tz = { version = "0.10", optional = true }
 rustix = { version = "1", features = ["event"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util", "net"] }
 tracing = "0.1"
@@ -35,4 +37,3 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 tempfile = "3"
 hyprland = { git = "https://github.com/hyprland-community/hyprland-rs", optional = true, features = ["tokio"] }
 resvg = { version = "0.47", optional = true }
-xkbcommon = { version = "0.9", optional = true }

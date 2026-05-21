@@ -1,5 +1,6 @@
 pub mod color;
 pub mod error;
+pub mod exec;
 pub mod hit_test;
 pub mod icon;
 pub mod input;
@@ -18,11 +19,11 @@ pub use model::{
     BarColors, BarLayout, BarSpec, BarStyle, DisplayMode, Island, Segment, SegmentEvents,
     SubmenuItemConfig,
 };
-pub use modules::ModuleConfigs;
 #[cfg(feature = "workspaces")]
 pub use modules::workspaces::{
     VisibilityMode as WorkspaceVisibilityMode, WorkspacesConfig, trim_alpha,
 };
+pub use modules::{ModuleConfigs, ModuleUpdate, ScriptLine};
 pub use render::{FontContext, Frame, PaintOutput, paint_bar};
 pub use spawn::{ensure_runtime, spawn_shell_command};
 pub use wayland::run_bar;
