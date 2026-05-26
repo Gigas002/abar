@@ -9,11 +9,11 @@ theme = "theme.toml"
 # All modules are an opt-in cargo compile-time features.
 # Built-in modules can have pre-defined settings, which can be tweaked in the config.
 # Build-in modules list includes:
-# - workspaces: depends on 3rd party implementation, e.g. hyprland-rs, niri-ipc, etc
-# - window: same as above
-# - mpris
-# - keyboard
-# - tray
+# - workspaces: exec-handler module; driven by a user script via stdout JSON
+# - window: exec-handler module; driven by a user script via stdout JSON
+# - mpris: exec-handler module (post-first-release)
+# - keyboard: exec-handler module; driven by a user script via stdout JSON
+# - tray: architecture TBD (Phase 9)
 # - clock
 #
 # All modules include following events:
@@ -63,12 +63,15 @@ right = [
     ],
 ]
 
+[workspaces]
+exec = "~/.config/abar/scripts/workspaces/hyprland.sh"
+
 [window]
 # Maximum number of characters to show before truncating with "…". 0 = no limit.
 max_length = 50
 
 [keyboard]
-exec = "~/.config/abar/scripts/keyboard/hyprland_keyboard.sh"
+exec = "~/.config/abar/scripts/keyboard/hyprland.sh"
 # layouts = ["en-US", "ru-RU"]
 on_left_click = "hyprctl switchxkblayout all next"
 

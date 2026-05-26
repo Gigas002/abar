@@ -1,10 +1,8 @@
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
-#[cfg(any(feature = "clock", feature = "workspaces", feature = "window"))]
+#[cfg(any(feature = "clock", feature = "window"))]
 use std::sync::Arc;
-#[cfg(feature = "workspaces")]
-use std::sync::RwLock;
 #[cfg(feature = "clock")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -88,10 +86,6 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         clock_timezones: Vec::new(),
         #[cfg(feature = "clock")]
         clock_formats: Vec::new(),
-        #[cfg(feature = "workspaces")]
-        workspaces_state: Arc::new(RwLock::new(
-            crate::modules::workspaces::WorkspacesDisplayState::default(),
-        )),
     };
 
     // Spawn clock background task.
@@ -141,11 +135,11 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         }
     }
 
-    // Spawn a Hyprland workspace listener when the workspaces feature is active.
-    // Also spawn an exec handler if `exec` is configured.
+    // Spawn exec handler for workspaces if configured.
     #[cfg(feature = "workspaces")]
-    if let Some(ws_cfg) = modules.workspaces {
-        let ws_exec = ws_cfg.exec.clone();
+    if let Some(ws_cfg) = modules.workspaces
+        && let Some(cmd) = ws_cfg.exec
+    {
         let has_workspaces = state
             .spec
             .layout
@@ -161,26 +155,16 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 path: "/dev/null".into(),
                 source,
             })?;
-            let ws_state = Arc::clone(&state.workspaces_state);
-            spawn::ensure_runtime()?.spawn(hyprland_workspaces_task(tx, wakeup, ws_cfg, ws_state));
-
-            if let Some(cmd) = ws_exec {
-                let tx = updates_tx.clone();
-                let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                    path: "/dev/null".into(),
-                    source,
-                })?;
-                spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                    crate::modules::ScriptLine,
-                    _,
-                >(
-                    "workspaces".to_string(),
-                    cmd,
-                    tx,
-                    wakeup,
-                    |line| ModuleUpdate::from_script("workspaces", line),
-                ));
-            }
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::ScriptLine,
+                _,
+            >(
+                "workspaces".to_string(),
+                cmd,
+                tx,
+                wakeup,
+                |line| ModuleUpdate::from_script("workspaces", line),
+            ));
         }
     }
 
@@ -333,182 +317,6 @@ async fn clock_task(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Hyprland workspaces background task
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "workspaces")]
-async fn hyprland_workspaces_task(
-    tx: mpsc::SyncSender<ModuleUpdate>,
-    wakeup: UnixStream,
-    config: crate::modules::workspaces::WorkspacesConfig,
-    ws_state: Arc<RwLock<crate::modules::workspaces::WorkspacesDisplayState>>,
-) {
-    use hyprland::event_listener::{
-        AsyncEventListener, WorkspaceEventData, WorkspaceMovedEventData,
-    };
-    use std::io::Write;
-    use std::sync::Mutex;
-
-    let config = Arc::new(config);
-    let tx = Arc::new(tx);
-    let wakeup = Arc::new(Mutex::new(wakeup));
-    let ws_state = Arc::new(ws_state);
-
-    // Send the initial workspace state before listening for events.
-    if let Some((label, use_markup)) = fetch_workspace_label(&config, &ws_state).await {
-        let update = if use_markup {
-            ModuleUpdate::markup("workspaces", label)
-        } else {
-            ModuleUpdate::text("workspaces", label)
-        };
-        let _ = tx.try_send(update);
-        let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-    }
-
-    let mut listener = AsyncEventListener::new();
-
-    // Workspace changed (active workspace switch).
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_changed_handler(move |_data: WorkspaceEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some((label, use_markup)) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let update = if use_markup {
-                        ModuleUpdate::markup("workspaces", label)
-                    } else {
-                        ModuleUpdate::text("workspaces", label)
-                    };
-                    let _ = tx.try_send(update);
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    // Workspace created.
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_added_handler(move |_data: WorkspaceEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some((label, use_markup)) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let update = if use_markup {
-                        ModuleUpdate::markup("workspaces", label)
-                    } else {
-                        ModuleUpdate::text("workspaces", label)
-                    };
-                    let _ = tx.try_send(update);
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    // Workspace destroyed.
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_deleted_handler(move |_data: WorkspaceEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some((label, use_markup)) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let update = if use_markup {
-                        ModuleUpdate::markup("workspaces", label)
-                    } else {
-                        ModuleUpdate::text("workspaces", label)
-                    };
-                    let _ = tx.try_send(update);
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    // Workspace moved to a different monitor (relevant for MonitorSpecific mode).
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_moved_handler(move |_data: WorkspaceMovedEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some((label, use_markup)) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let update = if use_markup {
-                        ModuleUpdate::markup("workspaces", label)
-                    } else {
-                        ModuleUpdate::text("workspaces", label)
-                    };
-                    let _ = tx.try_send(update);
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    if let Err(e) = listener.start_listener_async().await {
-        tracing::warn!(error = %e, "hyprland workspaces listener stopped");
-    }
-}
-
-/// Fetch the current workspace list from Hyprland, update the shared display state, and return
-/// the formatted label together with the `use_markup` flag from `format_label`.
-#[cfg(feature = "workspaces")]
-async fn fetch_workspace_label(
-    config: &crate::modules::workspaces::WorkspacesConfig,
-    ws_state: &Arc<RwLock<crate::modules::workspaces::WorkspacesDisplayState>>,
-) -> Option<(String, bool)> {
-    use crate::modules::workspaces::{VisibilityMode, WorkspaceInfo, WorkspacesDisplayState};
-    use hyprland::data::{Workspace, Workspaces};
-    use hyprland::shared::{HyprData, HyprDataActive};
-
-    let workspaces = Workspaces::get_async().await.ok()?;
-    let active = Workspace::get_active_async().await.ok()?;
-    let active_id = active.id;
-
-    let mut ws_list: Vec<WorkspaceInfo> = workspaces
-        .iter()
-        .filter(|w| match config.visibility_mode {
-            VisibilityMode::MonitorSpecific => w.monitor == active.monitor,
-            VisibilityMode::AllMonitors => true,
-        })
-        .map(|w| WorkspaceInfo {
-            id: w.id,
-            name: w.name.clone(),
-        })
-        .collect();
-    ws_list.sort_by_key(|w| w.id);
-
-    *ws_state.write().unwrap() = WorkspacesDisplayState {
-        workspaces: ws_list.clone(),
-        active_id,
-    };
-
-    let (label, use_markup) = crate::modules::workspaces::format_label(&ws_list, active_id, config);
-    Some((label, use_markup))
-}
 
 // ---------------------------------------------------------------------------
 // Hyprland window background task
@@ -564,19 +372,6 @@ async fn hyprland_window_task(
     }
 }
 
-/// Switch to a Hyprland workspace by numeric ID via the Lua dispatcher.
-///
-/// Hyprland's Lua dispatcher wraps the IPC payload as `return hl.dispatch(<payload>)`.
-/// `hl.dispatch` expects a dispatcher object; the correct Lua expression is
-/// `hl.dsp.focus({ workspace = N })`, matching the keybinding syntax in keybindings.lua.
-/// `DispatchType::Custom` lets us pass arbitrary Lua as the dispatch payload without
-/// hyprland-rs trying to format it as the old `workspace N` string.
-#[cfg(feature = "workspaces")]
-fn hyprland_switch_workspace(id: i32) -> Result<(), String> {
-    use hyprland::dispatch::{Dispatch, DispatchType};
-    let expr = format!("hl.dsp.focus({{ workspace = {id} }})");
-    Dispatch::call(DispatchType::Custom(&expr, "")).map_err(|e| e.to_string())
-}
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -646,8 +441,6 @@ struct AppState {
     clock_timezones: Vec<chrono_tz::Tz>,
     #[cfg(feature = "clock")]
     clock_formats: Vec<String>,
-    #[cfg(feature = "workspaces")]
-    workspaces_state: Arc<RwLock<crate::modules::workspaces::WorkspacesDisplayState>>,
 }
 
 impl AppState {
@@ -942,33 +735,6 @@ impl AppState {
                 };
                 if let Err(e) = self.apply_update(ModuleUpdate::text("clock", label), _qh) {
                     warn!(error = %e, "clock tz update repaint failed");
-                }
-                return;
-            }
-        }
-
-        #[cfg(feature = "workspaces")]
-        if matches!(action, PointerAction::LeftClick) {
-            let ws_seg_info = {
-                let computed = self.computed.as_ref().unwrap();
-                crate::hit_test::hit_test(computed, x, y)
-                    .filter(|s| s.module_id == "workspaces")
-                    .map(|s| (s.x, s.width, s.use_markup))
-            };
-            if let Some((seg_x, seg_width, use_markup)) = ws_seg_info {
-                if let Some(font) = self.font.as_ref() {
-                    let state = self.workspaces_state.read().unwrap();
-                    if let Some(id) = crate::modules::workspaces::workspace_at_x(
-                        x,
-                        seg_x,
-                        seg_width,
-                        &state,
-                        use_markup,
-                        &|text| font.measure(text),
-                    ) && let Err(e) = hyprland_switch_workspace(id)
-                    {
-                        warn!(error = %e, workspace = id, "failed to switch workspace");
-                    }
                 }
                 return;
             }

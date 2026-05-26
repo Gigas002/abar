@@ -334,7 +334,7 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 > **Removes** all direct compositor IPC from abar (`hyprland-rs`, `niri-ipc`, `libxkbcommon`). After this phase, `libabar` has no compositor-named features; all three modules read state from their `exec` script via the Phase 7 infrastructure.
 
 - [x] **`keyboard`**: delete `hyprland` event-socket path and `xkb` feature path; module holds `current_layout: String`, updated via `apply_update` from exec script stdout; static placeholder if `exec` is absent.
-- [ ] **`workspaces`**: delete `hyprland` feature wiring (`AsyncEventListener`, `hyprland-rs` dep); module receives `ModuleUpdate` from exec script; `visibility_mode` and Pango markup rendering stay (script is responsible for emitting pre-formatted markup in `text` with `"markup": true`).
+- [x] **`workspaces`**: delete `hyprland` feature wiring (`AsyncEventListener`, `hyprland-rs` dep); module receives `ModuleUpdate` from exec script; `visibility_mode` and Pango markup rendering stay (script is responsible for emitting pre-formatted markup in `text` with `"markup": true`).
 - [ ] **`window`**: delete Hyprland `add_active_window_changed_handler` + `Client::get_active_async()`; module receives `ModuleUpdate` from exec script; `truncate_title` + `max_length` stay unchanged (applied after receiving `text`).
 - [ ] Remove `hyprland` and `xkb` features from `libabar/Cargo.toml`; update `abar/Cargo.toml` passthroughs; scrub feature matrix in CI.
 - [ ] `hyprland-rs`, `niri-ipc`, `libxkbcommon` must not appear in `Cargo.lock`.
