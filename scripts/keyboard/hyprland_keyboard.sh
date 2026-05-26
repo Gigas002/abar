@@ -12,7 +12,7 @@ get_and_format_layout() {
     esac
 
     # 3. Output as JSON for abar to read
-    echo "{\"text\": \"$CLEAN\"}"
+    echo "{\"label\": \"$CLEAN\"}"
 }
 
 # --- Ask about current layout on startup ---

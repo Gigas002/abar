@@ -128,11 +128,15 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 path: "/dev/null".into(),
                 source,
             })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler(
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::keyboard::KeyboardData,
+                _,
+            >(
                 "keyboard".to_string(),
                 cmd,
                 tx,
                 wakeup,
+                |data| ModuleUpdate::text("keyboard", data.label),
             ));
         }
     }
@@ -166,11 +170,15 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                     path: "/dev/null".into(),
                     source,
                 })?;
-                spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler(
+                spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                    crate::modules::ScriptLine,
+                    _,
+                >(
                     "workspaces".to_string(),
                     cmd,
                     tx,
                     wakeup,
+                    |line| ModuleUpdate::from_script("workspaces", line),
                 ));
             }
         }
@@ -204,11 +212,15 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                     path: "/dev/null".into(),
                     source,
                 })?;
-                spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler(
+                spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                    crate::modules::ScriptLine,
+                    _,
+                >(
                     "window".to_string(),
                     cmd,
                     tx,
                     wakeup,
+                    |line| ModuleUpdate::from_script("window", line),
                 ));
             }
         }

@@ -1,3 +1,11 @@
+use serde::Deserialize;
+
+/// JSON record emitted by the keyboard exec script.
+#[derive(Deserialize)]
+pub struct KeyboardData {
+    pub label: String,
+}
+
 /// Configuration for the keyboard module passed into the Wayland run loop.
 #[derive(Debug, Clone, Default)]
 pub struct KeyboardConfig {
