@@ -14,8 +14,7 @@ clock = ["dep:chrono-tz"]
 keyboard = []
 tray = []
 workspaces = []
-window = ["hyprland"]
-hyprland = ["dep:hyprland"]
+window = []
 mpris = []
 svg = ["dep:resvg"]
 
@@ -35,5 +34,4 @@ wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 tempfile = "3"
-hyprland = { git = "https://github.com/hyprland-community/hyprland-rs", optional = true, features = ["tokio"] }
 resvg = { version = "0.47", optional = true }

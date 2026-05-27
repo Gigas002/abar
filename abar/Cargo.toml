@@ -19,7 +19,6 @@ keyboard = ["libabar/keyboard"]
 tray = ["libabar/tray"]
 workspaces = ["libabar/workspaces"]
 window = ["libabar/window"]
-hyprland = ["libabar/hyprland"]
 mpris = ["libabar/mpris"]
 svg = ["libabar/svg"]
 

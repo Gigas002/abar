@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
-#[cfg(any(feature = "clock", feature = "window"))]
+#[cfg(feature = "clock")]
 use std::sync::Arc;
 #[cfg(feature = "clock")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -168,11 +168,12 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         }
     }
 
-    // Spawn a Hyprland active-window listener when the window feature is active.
-    // Also spawn an exec handler if `exec` is configured.
+    // Spawn exec handler for window if configured.
     #[cfg(feature = "window")]
-    if let Some(window_cfg) = modules.window {
-        let window_exec = window_cfg.exec.clone();
+    if let Some(window_cfg) = modules.window
+        && let Some(cmd) = window_cfg.exec
+    {
+        let max_length = window_cfg.max_length;
         let has_window = state
             .spec
             .layout
@@ -188,25 +189,23 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 path: "/dev/null".into(),
                 source,
             })?;
-            spawn::ensure_runtime()?.spawn(hyprland_window_task(tx, wakeup, window_cfg));
-
-            if let Some(cmd) = window_exec {
-                let tx = updates_tx.clone();
-                let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                    path: "/dev/null".into(),
-                    source,
-                })?;
-                spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                    crate::modules::ScriptLine,
-                    _,
-                >(
-                    "window".to_string(),
-                    cmd,
-                    tx,
-                    wakeup,
-                    |line| ModuleUpdate::from_script("window", line),
-                ));
-            }
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::ScriptLine,
+                _,
+            >(
+                "window".to_string(),
+                cmd,
+                tx,
+                wakeup,
+                move |line| {
+                    let mut update = ModuleUpdate::from_script("window", line);
+                    if max_length > 0 {
+                        update.text =
+                            crate::modules::window::truncate_title(&update.text, max_length);
+                    }
+                    update
+                },
+            ));
         }
     }
 
@@ -317,60 +316,6 @@ async fn clock_task(
     }
 }
 
-
-// ---------------------------------------------------------------------------
-// Hyprland window background task
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "window")]
-async fn hyprland_window_task(
-    tx: mpsc::SyncSender<ModuleUpdate>,
-    wakeup: UnixStream,
-    config: crate::modules::window::WindowConfig,
-) {
-    use hyprland::data::Client;
-    use hyprland::event_listener::{AsyncEventListener, WindowEventData};
-    use hyprland::shared::HyprDataActiveOptional;
-    use std::io::Write;
-    use std::sync::Mutex;
-
-    let config = Arc::new(config);
-    let tx = Arc::new(tx);
-    let wakeup = Arc::new(Mutex::new(wakeup));
-
-    // Send the initial active window title before listening for events.
-    let initial_label = Client::get_active_async()
-        .await
-        .ok()
-        .flatten()
-        .map(|c| crate::modules::window::truncate_title(&c.title, config.max_length))
-        .unwrap_or_default();
-    let _ = tx.try_send(ModuleUpdate::text("window", initial_label));
-    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-
-    let mut listener = AsyncEventListener::new();
-
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        listener.add_active_window_changed_handler(move |data: Option<WindowEventData>| {
-            let label = data
-                .map(|w| crate::modules::window::truncate_title(&w.title, cfg.max_length))
-                .unwrap_or_default();
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            Box::pin(async move {
-                let _ = tx.try_send(ModuleUpdate::text("window", label));
-                let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-            })
-        });
-    }
-
-    if let Err(e) = listener.start_listener_async().await {
-        tracing::warn!(error = %e, "hyprland window listener stopped");
-    }
-}
 
 
 // ---------------------------------------------------------------------------
