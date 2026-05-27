@@ -69,7 +69,7 @@ fn example_config_toml_deserializes() {
     );
     assert_eq!(
         cfg.keyboard.as_ref().and_then(|k| k.exec.as_deref()),
-        Some("~/.config/abar/scripts/keyboard/hyprland_keyboard.sh")
+        Some("~/.config/abar/scripts/keyboard/hyprland.sh")
     );
     assert_eq!(
         cfg.clock
