@@ -209,6 +209,47 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         }
     }
 
+    // Spawn exec handler for mpris if configured.
+    #[cfg(feature = "mpris")]
+    if let Some(mpris_cfg) = modules.mpris
+        && let Some(cmd) = mpris_cfg.exec
+    {
+        let max_length = mpris_cfg.max_length;
+        let has_mpris = state
+            .spec
+            .layout
+            .left
+            .iter()
+            .chain(state.spec.layout.center.iter())
+            .chain(state.spec.layout.right.iter())
+            .flat_map(|island| island.segments.iter())
+            .any(|seg| seg.module_id == "mpris");
+        if has_mpris {
+            let tx = updates_tx.clone();
+            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
+                path: "/dev/null".into(),
+                source,
+            })?;
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::ScriptLine,
+                _,
+            >(
+                "mpris".to_string(),
+                cmd,
+                tx,
+                wakeup,
+                move |line| {
+                    let mut update = ModuleUpdate::from_script("mpris", line);
+                    if max_length > 0 {
+                        update.text =
+                            crate::modules::window::truncate_title(&update.text, max_length);
+                    }
+                    update
+                },
+            ));
+        }
+    }
+
     // Suppress unused-variable warning when no module features are active.
     let _ = modules;
     // All tasks that need the wakeup sender now hold their own clones; drop ours.

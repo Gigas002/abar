@@ -184,6 +184,19 @@ fn build_module_configs(
         Some(WindowConfig { max_length, exec })
     };
 
+    #[cfg(feature = "mpris")]
+    let mpris = {
+        use libabar::modules::mpris::MprisConfig;
+        let max_length = _config
+            .mpris
+            .as_ref()
+            .and_then(|m| m.max_length)
+            .unwrap_or(0);
+        let exec = _config.mpris.as_ref().and_then(|m| m.exec.clone());
+        set_segment_label(_layout, "mpris", "");
+        Some(MprisConfig { max_length, exec })
+    };
+
     ModuleConfigs {
         #[cfg(feature = "clock")]
         clock,
@@ -193,6 +206,8 @@ fn build_module_configs(
         workspaces,
         #[cfg(feature = "window")]
         window,
+        #[cfg(feature = "mpris")]
+        mpris,
     }
 }
 
@@ -200,7 +215,8 @@ fn build_module_configs(
     feature = "clock",
     feature = "keyboard",
     feature = "workspaces",
-    feature = "window"
+    feature = "window",
+    feature = "mpris",
 ))]
 fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
     for island in layout

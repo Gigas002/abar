@@ -87,6 +87,7 @@ fn nested_layout_groups_parse() {
         &[
             LayoutEntry::Module("system_info".into()),
             LayoutEntry::Module("workspaces".into()),
+            LayoutEntry::Module("mpris".into()),
         ]
     );
     assert_eq!(

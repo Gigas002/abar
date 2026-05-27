@@ -58,3 +58,11 @@ pub struct Window {
     #[serde(flatten)]
     pub events: Option<Events>,
 }
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct Mpris {
+    pub max_length: Option<usize>,
+    pub exec: Option<String>,
+    #[serde(flatten)]
+    pub events: Option<Events>,
+}

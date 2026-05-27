@@ -11,7 +11,7 @@ theme = "theme.toml"
 # Build-in modules list includes:
 # - workspaces: exec-handler module; driven by a user script via stdout JSON
 # - window: exec-handler module; driven by a user script via stdout JSON
-# - mpris: exec-handler module (post-first-release)
+# - mpris: exec-handler module; driven by a user script via stdout JSON (e.g. playerctl)
 # - keyboard: exec-handler module; driven by a user script via stdout JSON
 # - tray: architecture TBD (Phase 9)
 # - clock
@@ -47,7 +47,7 @@ custom = [
 # Modules are displayed in the order they are defined.
 # Modules are displayed on the left, center, and right sides of the bar.
 [layout]
-left = ["system_info", "workspaces"]
+left = ["system_info", "workspaces", "mpris"]
 center = ["window"]
 right = [
     [
@@ -78,6 +78,15 @@ on_scroll_down = "hyprctl dispatch 'hl.dsp.window.cycle_next({})'"
 [keyboard]
 exec = "~/.config/abar/scripts/keyboard/hyprland.sh"
 on_left_click = "hyprctl switchxkblayout all next"
+
+[mpris]
+exec = "~/.config/abar/scripts/mpris/playerctl.sh"
+# Maximum number of characters to show before truncating with "…". 0 = no limit.
+max_length = 50
+on_left_click = "playerctl play-pause"
+on_right_click = "playerctl next"
+on_scroll_up = "playerctl volume 0.05+"
+on_scroll_down = "playerctl volume 0.05-"
 
 [clock]
 formats = [

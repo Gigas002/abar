@@ -70,12 +70,16 @@ pub struct ModuleConfigs {
     pub workspaces: Option<workspaces::WorkspacesConfig>,
     #[cfg(feature = "window")]
     pub window: Option<window::WindowConfig>,
+    #[cfg(feature = "mpris")]
+    pub mpris: Option<mpris::MprisConfig>,
 }
 
 #[cfg(feature = "clock")]
 pub mod clock;
 #[cfg(feature = "keyboard")]
 pub mod keyboard;
+#[cfg(feature = "mpris")]
+pub mod mpris;
 #[cfg(feature = "window")]
 pub mod window;
 #[cfg(feature = "workspaces")]
