@@ -7,7 +7,7 @@
 # Env vars:
 #   ABAR_MPRIS_FORMAT   playerctl format string (default: {{artist}} — {{title}})
 
-# Assign the default with single quotes so bash never mis-parses the {{...}} playerctl
+# Assign the default with single quotes so bash never misparses the {{...}} playerctl
 # template syntax as brace-tracking delimiters inside ${var:-...}.
 [ -z "$ABAR_MPRIS_FORMAT" ] && ABAR_MPRIS_FORMAT='{{artist}} — {{title}}'
 
