@@ -30,11 +30,11 @@ theme = "theme.toml"
 # If icon is not specified or not found the panic is expected.
 [modules]
 custom = [
-    { name = "system_info", icon = "gnome-system-monitor", on_left_click = "btm" },
+    { name = "system_info", icon = "gnome-system-monitor", on_left_click = "$TERMINAL -e btm" },
     { name = "wleave", icon = "system-log-out", submenu = [
-        { content = "sleep", action = "alacritty" },
-        { content = "logout", action = "alacritty" },
-        { content = "poweroff", action = "alacritty" },
+        { content = "sleep", action = "$TERMINAL" },
+        { content = "logout", action = "$TERMINAL" },
+        { content = "poweroff", action = "$TERMINAL" },
     ] },
     { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
     { name = "bluetooth", icon = "blueman", on_left_click = "blueman-manager" },
@@ -77,7 +77,6 @@ on_scroll_down = "hyprctl dispatch 'hl.dsp.window.cycle_next({})'"
 
 [keyboard]
 exec = "~/.config/abar/scripts/keyboard/hyprland.sh"
-# layouts = ["en-US", "ru-RU"]
 on_left_click = "hyprctl switchxkblayout all next"
 
 [clock]
@@ -88,4 +87,4 @@ formats = [
 # on_scroll_up / on_scroll_down: cycle through timezones
 timezones = ["Asia/Tokyo", "Europe/Moscow"]
 # launch calendar app on left click
-on_left_click = "rusti-cal"
+on_left_click = "$TERMINAL -e calendar-tui"
