@@ -335,10 +335,10 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 - [x] **`keyboard`**: delete `hyprland` event-socket path and `xkb` feature path; module holds `current_layout: String`, updated via `apply_update` from exec script stdout; static placeholder if `exec` is absent.
 - [x] **`workspaces`**: delete `hyprland` feature wiring (`AsyncEventListener`, `hyprland-rs` dep); module receives `ModuleUpdate` from exec script; `visibility_mode` and Pango markup rendering stay (script is responsible for emitting pre-formatted markup in `text` with `"markup": true`).
-- [ ] **`window`**: delete Hyprland `add_active_window_changed_handler` + `Client::get_active_async()`; module receives `ModuleUpdate` from exec script; `truncate_title` + `max_length` stay unchanged (applied after receiving `text`).
-- [ ] Remove `hyprland` and `xkb` features from `libabar/Cargo.toml`; update `abar/Cargo.toml` passthroughs; scrub feature matrix in CI.
-- [ ] `hyprland-rs`, `niri-ipc`, `libxkbcommon` must not appear in `Cargo.lock`.
-- [ ] Update `examples/config.toml` with `exec` field examples for `keyboard`, `workspaces`, `window`.
+- [x] **`window`**: delete Hyprland `add_active_window_changed_handler` + `Client::get_active_async()`; module receives `ModuleUpdate` from exec script; `truncate_title` + `max_length` stay unchanged (applied after receiving `text`).
+- [x] Remove `hyprland` and `xkb` features from `libabar/Cargo.toml`; update `abar/Cargo.toml` passthroughs; scrub feature matrix in CI.
+- [x] `hyprland-rs`, `niri-ipc`, `libxkbcommon` must not appear in `Cargo.lock`.
+- [x] Update `examples/config.toml` with `exec` field examples for `keyboard`, `workspaces`, `window`.
 - [ ] `mpris` feature implemented in the same manner
 
 **Verify**: `cargo build --no-default-features` and `--all-features` both succeed; `Cargo.lock` contains neither `hyprland-rs` nor `libxkbcommon`; existing layout/render tests still pass; manual: modules show placeholder when `exec` is absent, live data when `keyboard.sh` runs.
