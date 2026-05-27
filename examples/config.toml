@@ -31,10 +31,10 @@ theme = "theme.toml"
 [modules]
 custom = [
     { name = "system_info", icon = "gnome-system-monitor", on_left_click = "$TERMINAL -e btm" },
-    { name = "wleave", icon = "system-log-out", submenu = [
-        { content = "sleep", action = "$TERMINAL" },
-        { content = "logout", action = "$TERMINAL" },
-        { content = "poweroff", action = "$TERMINAL" },
+    { name = "leave", icon = "system-log-out", submenu = [
+        { content = "sleep", action = "systemctl suspend" },
+        { content = "logout", action = "hyprctl dispatch exit" },
+        { content = "poweroff", action = "systemctl poweroff" },
     ] },
     { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
     { name = "bluetooth", icon = "blueman", on_left_click = "blueman-manager" },
@@ -59,7 +59,7 @@ right = [
         "bluetooth",
         "network",
         "audio",
-        "wleave",
+        "leave",
     ],
 ]
 

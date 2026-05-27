@@ -245,6 +245,15 @@ fn apply_markup_for_workspaces(layout: &mut BarLayout, theme_ws: Option<&ThemeWo
 fn apply_icon_fallbacks(layout: &mut BarLayout, font_size: f64) {
     let search_dirs = default_search_dirs();
     let theme_name = std::env::var("XDG_ICON_THEME").unwrap_or_else(|_| "hicolor".to_string());
+    apply_icon_fallbacks_with_dirs(layout, font_size, &search_dirs, &theme_name);
+}
+
+pub(crate) fn apply_icon_fallbacks_with_dirs(
+    layout: &mut BarLayout,
+    font_size: f64,
+    search_dirs: &[std::path::PathBuf],
+    theme_name: &str,
+) {
     let size = font_size.round() as u32;
 
     for island in layout
@@ -260,7 +269,7 @@ fn apply_icon_fallbacks(layout: &mut BarLayout, font_size: f64) {
             let Some(icon_name) = &seg.icon_name else {
                 continue;
             };
-            if resolve_icon(icon_name, size, &search_dirs, &theme_name).is_none() {
+            if resolve_icon(icon_name, size, search_dirs, theme_name).is_none() {
                 tracing::warn!(
                     module = %seg.module_id,
                     icon = %icon_name,

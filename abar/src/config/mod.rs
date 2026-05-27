@@ -87,10 +87,23 @@ impl Config {
 }
 
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
+    config_dir_from_env(
+        std::env::var_os("XDG_CONFIG_HOME")
+            .as_deref()
+            .map(|s| s.to_string_lossy())
+            .as_deref(),
+        std::env::var_os("HOME")
+            .as_deref()
+            .map(|s| s.to_string_lossy())
+            .as_deref(),
+    )
+}
+
+pub(crate) fn config_dir_from_env(xdg_config_home: Option<&str>, home: Option<&str>) -> PathBuf {
+    xdg_config_home
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"))
         .join("abar")
 }
