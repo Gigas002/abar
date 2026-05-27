@@ -72,6 +72,8 @@ on_scroll_down = "hyprctl dispatch \"hl.dsp.focus({ workspace = 'e+1' })\""
 exec = "~/.config/abar/scripts/window/hyprland.sh"
 # Maximum number of characters to show before truncating with "…". 0 = no limit.
 max_length = 50
+on_scroll_up = "hyprctl dispatch 'hl.dsp.window.cycle_next({ next = false })'"
+on_scroll_down = "hyprctl dispatch 'hl.dsp.window.cycle_next({})'"
 
 [keyboard]
 exec = "~/.config/abar/scripts/keyboard/hyprland.sh"
