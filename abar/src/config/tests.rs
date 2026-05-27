@@ -119,7 +119,10 @@ fn custom_module_events_parse() {
     assert_eq!(audio.icon, "pavucontrol");
     let events = audio.events.as_ref().unwrap();
     assert_eq!(events.on_left_click.as_deref(), Some("pavucontrol"));
-    assert_eq!(events.on_scroll_up.as_deref(), Some("pavucontrol -t 3"));
+    assert_eq!(
+        events.on_scroll_up.as_deref(),
+        Some("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+")
+    );
 }
 
 #[test]

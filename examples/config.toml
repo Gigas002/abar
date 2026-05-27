@@ -36,7 +36,7 @@ custom = [
         { content = "logout", action = "hyprctl dispatch exit" },
         { content = "poweroff", action = "systemctl poweroff" },
     ] },
-    { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
+    { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+", on_scroll_down = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" },
     { name = "bluetooth", icon = "blueman", on_left_click = "blueman-manager" },
     { name = "network", icon = "preferences-system-network", on_left_click = "nm-connection-editor" },
 ]
