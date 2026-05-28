@@ -25,6 +25,8 @@ pub struct WorkspacesConfig {
     pub active_color: Option<String>,
     /// Pango-compatible foreground color (`#rrggbb`) for inactive workspaces.
     pub inactive_color: Option<String>,
+    /// Optional exec command (`sh -c <exec>`) whose stdout drives this module.
+    pub exec: Option<String>,
 }
 
 /// Minimal workspace descriptor used for label formatting and testing.

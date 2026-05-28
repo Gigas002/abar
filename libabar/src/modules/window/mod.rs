@@ -5,11 +5,16 @@ pub struct WindowConfig {
     ///
     /// Zero means no limit.
     pub max_length: usize,
+    /// Optional exec command (`sh -c <exec>`) whose stdout drives this module.
+    pub exec: Option<String>,
 }
 
 impl Default for WindowConfig {
     fn default() -> Self {
-        Self { max_length: 50 }
+        Self {
+            max_length: 50,
+            exec: None,
+        }
     }
 }
 

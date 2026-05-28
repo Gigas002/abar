@@ -136,24 +136,22 @@ right = []
 
 #[test]
 fn resolve_falls_back_to_text_for_missing_icon() {
-    use libabar::DisplayMode;
+    use libabar::{BarLayout, DisplayMode, Island, Segment};
 
-    let raw = r#"
-[base]
-font_name = "sans-serif"
-font_size = 14
+    use crate::settings::apply_icon_fallbacks_with_dirs;
 
-[modules]
-custom = [{ name = "mymod", icon = "abar-nonexistent-icon-xyz" }]
+    let seg = Segment::icon_only("mymod", "nonexistent-icon-xyz");
+    let mut layout = BarLayout {
+        left: vec![Island {
+            segments: vec![seg],
+        }],
+        ..BarLayout::default()
+    };
 
-[layout]
-left = ["mymod"]
-"#;
-    let cfg: Config = toml::from_str(raw).unwrap();
-    let theme = Theme::default();
-    let cli = Cli::try_parse_from(["abar"]).unwrap();
-    let s = Settings::resolve(&cli, cfg, theme).unwrap();
-    let seg = &s.bar.layout.left[0].segments[0];
+    // Empty search dirs: no icon can be resolved regardless of system state.
+    apply_icon_fallbacks_with_dirs(&mut layout, 14.0, &[], "hicolor");
+
+    let seg = &layout.left[0].segments[0];
     assert_eq!(
         seg.display_mode,
         DisplayMode::TextOnly,

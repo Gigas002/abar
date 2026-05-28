@@ -1,8 +1,6 @@
-use std::path::Path;
+use std::path::PathBuf;
 
-use super::{
-    Config, Layout, config_dir, default_config_path, events::events_for_module, layout::LayoutEntry,
-};
+use super::{Config, Layout, config_dir_from_env, events::events_for_module, layout::LayoutEntry};
 
 const MINIMAL: &str = r#"
 [base]
@@ -68,11 +66,8 @@ fn example_config_toml_deserializes() {
             .is_some()
     );
     assert_eq!(
-        cfg.keyboard
-            .as_ref()
-            .and_then(|k| k.layouts.as_ref())
-            .map(|v| v.as_slice()),
-        Some(["en-US".to_string(), "ru-RU".to_string()].as_slice())
+        cfg.keyboard.as_ref().and_then(|k| k.exec.as_deref()),
+        Some("~/.config/abar/scripts/keyboard/hyprland.sh")
     );
     assert_eq!(
         cfg.clock
@@ -92,6 +87,7 @@ fn nested_layout_groups_parse() {
         &[
             LayoutEntry::Module("system_info".into()),
             LayoutEntry::Module("workspaces".into()),
+            LayoutEntry::Module("mpris".into()),
         ]
     );
     assert_eq!(
@@ -107,7 +103,7 @@ fn nested_layout_groups_parse() {
     match &right[1] {
         LayoutEntry::Group(g) => assert_eq!(
             g,
-            &["tray", "clock", "bluetooth", "network", "audio", "wleave"]
+            &["tray", "clock", "bluetooth", "network", "audio", "leave"]
         ),
         other => panic!("expected group, got {other:?}"),
     }
@@ -124,7 +120,10 @@ fn custom_module_events_parse() {
     assert_eq!(audio.icon, "pavucontrol");
     let events = audio.events.as_ref().unwrap();
     assert_eq!(events.on_left_click.as_deref(), Some("pavucontrol"));
-    assert_eq!(events.on_scroll_up.as_deref(), Some("pavucontrol -t 3"));
+    assert_eq!(
+        events.on_scroll_up.as_deref(),
+        Some("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+")
+    );
 }
 
 #[test]
@@ -132,7 +131,10 @@ fn clock_module_events_parse() {
     let cfg = parse(EXAMPLE_CONFIG);
     let clock = cfg.clock.as_ref().unwrap();
     let events = clock.events.as_ref().unwrap();
-    assert_eq!(events.on_left_click.as_deref(), Some("rusti-cal"));
+    assert_eq!(
+        events.on_left_click.as_deref(),
+        Some("$TERMINAL -e calendar-tui")
+    );
     assert_eq!(
         clock.timezones.as_deref(),
         Some(["Asia/Tokyo".to_string(), "Europe/Moscow".to_string()].as_slice(),)
@@ -151,13 +153,36 @@ fn default_config_has_base_and_layout() {
 }
 
 #[test]
-fn config_dir_ends_with_abar() {
-    assert!(config_dir().ends_with("abar"));
+fn config_dir_uses_xdg_config_home() {
+    let dir = config_dir_from_env(Some("/custom/config"), None);
+    assert_eq!(dir, PathBuf::from("/custom/config/abar"));
 }
 
 #[test]
-fn default_config_path_ends_with_config_toml() {
-    assert!(default_config_path().ends_with("abar/config.toml"));
+fn config_dir_falls_back_to_home_dot_config() {
+    let dir = config_dir_from_env(None, Some("/home/user"));
+    assert_eq!(dir, PathBuf::from("/home/user/.config/abar"));
+}
+
+#[test]
+fn config_dir_ignores_empty_xdg_and_uses_home() {
+    let dir = config_dir_from_env(Some(""), Some("/home/user"));
+    assert_eq!(dir, PathBuf::from("/home/user/.config/abar"));
+}
+
+#[test]
+fn config_dir_falls_back_to_relative_when_no_env() {
+    let dir = config_dir_from_env(None, None);
+    assert_eq!(dir, PathBuf::from(".config/abar"));
+}
+
+#[test]
+fn default_config_path_appends_config_toml() {
+    let dir = config_dir_from_env(Some("/cfg"), None);
+    assert_eq!(
+        dir.join("config.toml"),
+        PathBuf::from("/cfg/abar/config.toml")
+    );
 }
 
 #[test]
@@ -195,13 +220,13 @@ fn events_for_module_reads_builtin_and_custom_tables() {
     let cfg = parse(EXAMPLE_CONFIG);
     assert_eq!(
         events_for_module(&cfg, "clock").on_left_click.as_deref(),
-        Some("rusti-cal")
+        Some("$TERMINAL -e calendar-tui")
     );
     assert_eq!(
         events_for_module(&cfg, "system_info")
             .on_left_click
             .as_deref(),
-        Some("btm")
+        Some("$TERMINAL -e btm")
     );
     assert!(
         events_for_module(&cfg, "workspaces")
@@ -222,7 +247,10 @@ fn layout_module_names_in_order() {
 
 #[test]
 fn load_missing_file_returns_defaults() {
-    let cfg = Config::load(Path::new("/nonexistent/abar/config.toml"));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    // `path` does not exist — dir only creates the directory, not the file.
+    let cfg = Config::load(&path);
     let base = cfg.base.unwrap();
     assert_eq!(base.font_name.as_deref(), Some("NotoSans Nerd Font"));
     assert_eq!(base.font_size, Some(14.0));

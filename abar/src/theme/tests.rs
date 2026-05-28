@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use super::{Theme, resolve_path};
 use libabar::color::{ParseHexRgbaError, parse_hex_rgba_to_bgra};
 
@@ -100,7 +98,10 @@ fn default_theme_has_black_background_and_white_foreground() {
 
 #[test]
 fn load_missing_theme_returns_defaults() {
-    let t = Theme::load(Path::new("/nonexistent/abar/theme.toml"));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("theme.toml");
+    // `path` does not exist — dir only creates the directory, not the file.
+    let t = Theme::load(&path);
     let base = t.base.unwrap();
     assert_eq!(base.background_color.as_deref(), Some("#000000FF"));
     assert_eq!(base.foreground_color.as_deref(), Some("#FFFFFFFF"));

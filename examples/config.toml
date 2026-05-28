@@ -9,11 +9,11 @@ theme = "theme.toml"
 # All modules are an opt-in cargo compile-time features.
 # Built-in modules can have pre-defined settings, which can be tweaked in the config.
 # Build-in modules list includes:
-# - workspaces: depends on 3rd party implementation, e.g. hyprland-rs, niri-ipc, etc
-# - window: same as above
-# - mpris
-# - keyboard
-# - tray
+# - workspaces: exec-handler module; driven by a user script via stdout JSON
+# - window: exec-handler module; driven by a user script via stdout JSON
+# - mpris: exec-handler module; driven by a user script via stdout JSON (e.g. playerctl)
+# - keyboard: exec-handler module; driven by a user script via stdout JSON
+# - tray: architecture TBD (Phase 9)
 # - clock
 #
 # All modules include following events:
@@ -30,13 +30,13 @@ theme = "theme.toml"
 # If icon is not specified or not found the panic is expected.
 [modules]
 custom = [
-    { name = "system_info", icon = "gnome-system-monitor", on_left_click = "btm" },
-    { name = "wleave", icon = "system-log-out", submenu = [
-        { content = "sleep", action = "alacritty" },
-        { content = "logout", action = "alacritty" },
-        { content = "poweroff", action = "alacritty" },
+    { name = "system_info", icon = "gnome-system-monitor", on_left_click = "$TERMINAL -e btm" },
+    { name = "leave", icon = "system-log-out", submenu = [
+        { content = "sleep", action = "systemctl suspend" },
+        { content = "logout", action = "hyprctl dispatch exit" },
+        { content = "poweroff", action = "systemctl poweroff" },
     ] },
-    { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "pavucontrol -t 3", on_scroll_down = "pavucontrol -t 4" },
+    { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+", on_scroll_down = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" },
     { name = "bluetooth", icon = "blueman", on_left_click = "blueman-manager" },
     { name = "network", icon = "preferences-system-network", on_left_click = "nm-connection-editor" },
 ]
@@ -47,7 +47,7 @@ custom = [
 # Modules are displayed in the order they are defined.
 # Modules are displayed on the left, center, and right sides of the bar.
 [layout]
-left = ["system_info", "workspaces"]
+left = ["system_info", "workspaces", "mpris"]
 center = ["window"]
 right = [
     [
@@ -59,17 +59,34 @@ right = [
         "bluetooth",
         "network",
         "audio",
-        "wleave",
+        "leave",
     ],
 ]
 
+[workspaces]
+exec = "~/.config/abar/scripts/workspaces/hyprland.sh"
+on_scroll_up = "hyprctl dispatch \"hl.dsp.focus({ workspace = 'e-1' })\""
+on_scroll_down = "hyprctl dispatch \"hl.dsp.focus({ workspace = 'e+1' })\""
+
 [window]
+exec = "~/.config/abar/scripts/window/hyprland.sh"
 # Maximum number of characters to show before truncating with "…". 0 = no limit.
 max_length = 50
+on_scroll_up = "hyprctl dispatch 'hl.dsp.window.cycle_next({ next = false })'"
+on_scroll_down = "hyprctl dispatch 'hl.dsp.window.cycle_next({})'"
 
 [keyboard]
-layouts = ["en-US", "ru-RU"]
+exec = "~/.config/abar/scripts/keyboard/hyprland.sh"
 on_left_click = "hyprctl switchxkblayout all next"
+
+[mpris]
+exec = "~/.config/abar/scripts/mpris/playerctl.sh"
+# Maximum number of characters to show before truncating with "…". 0 = no limit.
+max_length = 50
+on_left_click = "playerctl play-pause"
+on_right_click = "playerctl next"
+on_scroll_up = "playerctl volume 0.05+"
+on_scroll_down = "playerctl volume 0.05-"
 
 [clock]
 formats = [
@@ -79,4 +96,4 @@ formats = [
 # on_scroll_up / on_scroll_down: cycle through timezones
 timezones = ["Asia/Tokyo", "Europe/Moscow"]
 # launch calendar app on left click
-on_left_click = "rusti-cal"
+on_left_click = "$TERMINAL -e calendar-tui"

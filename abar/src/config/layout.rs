@@ -100,6 +100,7 @@ fn builtin_label(module: &str) -> String {
         "workspaces" => "ws".into(),
         "window" => "window".into(),
         "tray" => "tray".into(),
+        "mpris" => "mpris".into(),
         other => other.into(),
     }
 }

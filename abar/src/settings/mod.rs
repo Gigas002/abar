@@ -143,13 +143,8 @@ fn build_module_configs(
     #[cfg(feature = "keyboard")]
     let keyboard = {
         use libabar::modules::keyboard::KeyboardConfig;
-        _config.keyboard.as_ref().map(|k| {
-            let layouts = k.layouts.clone().unwrap_or_default();
-            // Prime the segment with the first configured layout so it's never blank.
-            if let Some(first) = layouts.first() {
-                set_segment_label(_layout, "keyboard", first);
-            }
-            KeyboardConfig { layouts }
+        _config.keyboard.as_ref().map(|k| KeyboardConfig {
+            exec: k.exec.clone(),
         })
     };
 
@@ -164,10 +159,12 @@ fn build_module_configs(
             .unwrap_or_default();
         let active_color = theme_ws.active_color.as_deref().map(trim_alpha);
         let inactive_color = theme_ws.inactive_color.as_deref().map(trim_alpha);
+        let exec = _config.workspaces.as_ref().and_then(|w| w.exec.clone());
         let cfg = WorkspacesConfig {
             visibility_mode,
             active_color,
             inactive_color,
+            exec,
         };
         // Workspaces shows a placeholder until the background task sends the first update.
         set_segment_label(_layout, "workspaces", "...");
@@ -182,8 +179,22 @@ fn build_module_configs(
             .as_ref()
             .and_then(|w| w.max_length)
             .unwrap_or(50);
+        let exec = _config.window.as_ref().and_then(|w| w.exec.clone());
         set_segment_label(_layout, "window", "");
-        Some(WindowConfig { max_length })
+        Some(WindowConfig { max_length, exec })
+    };
+
+    #[cfg(feature = "mpris")]
+    let mpris = {
+        use libabar::modules::mpris::MprisConfig;
+        let max_length = _config
+            .mpris
+            .as_ref()
+            .and_then(|m| m.max_length)
+            .unwrap_or(0);
+        let exec = _config.mpris.as_ref().and_then(|m| m.exec.clone());
+        set_segment_label(_layout, "mpris", "");
+        Some(MprisConfig { max_length, exec })
     };
 
     ModuleConfigs {
@@ -195,6 +206,8 @@ fn build_module_configs(
         workspaces,
         #[cfg(feature = "window")]
         window,
+        #[cfg(feature = "mpris")]
+        mpris,
     }
 }
 
@@ -202,7 +215,8 @@ fn build_module_configs(
     feature = "clock",
     feature = "keyboard",
     feature = "workspaces",
-    feature = "window"
+    feature = "window",
+    feature = "mpris",
 ))]
 fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
     for island in layout
@@ -247,6 +261,15 @@ fn apply_markup_for_workspaces(layout: &mut BarLayout, theme_ws: Option<&ThemeWo
 fn apply_icon_fallbacks(layout: &mut BarLayout, font_size: f64) {
     let search_dirs = default_search_dirs();
     let theme_name = std::env::var("XDG_ICON_THEME").unwrap_or_else(|_| "hicolor".to_string());
+    apply_icon_fallbacks_with_dirs(layout, font_size, &search_dirs, &theme_name);
+}
+
+pub(crate) fn apply_icon_fallbacks_with_dirs(
+    layout: &mut BarLayout,
+    font_size: f64,
+    search_dirs: &[std::path::PathBuf],
+    theme_name: &str,
+) {
     let size = font_size.round() as u32;
 
     for island in layout
@@ -262,7 +285,7 @@ fn apply_icon_fallbacks(layout: &mut BarLayout, font_size: f64) {
             let Some(icon_name) = &seg.icon_name else {
                 continue;
             };
-            if resolve_icon(icon_name, size, &search_dirs, &theme_name).is_none() {
+            if resolve_icon(icon_name, size, search_dirs, theme_name).is_none() {
                 tracing::warn!(
                     module = %seg.module_id,
                     icon = %icon_name,

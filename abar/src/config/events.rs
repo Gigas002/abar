@@ -28,6 +28,7 @@ pub fn events_for_module(config: &Config, module_id: &str) -> SegmentEvents {
             events_from_config(config.workspaces.as_ref().and_then(|w| w.events.as_ref()))
         }
         "window" => events_from_config(config.window.as_ref().and_then(|w| w.events.as_ref())),
+        "mpris" => events_from_config(config.mpris.as_ref().and_then(|m| m.events.as_ref())),
         _ => SegmentEvents::default(),
     }
 }

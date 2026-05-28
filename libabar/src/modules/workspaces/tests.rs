@@ -35,6 +35,7 @@ fn markup_mode_with_colors() {
         visibility_mode: VisibilityMode::AllMonitors,
         active_color: Some("#00c1e4".into()),
         inactive_color: Some("#c74ded".into()),
+        exec: None,
     };
     let workspaces = vec![ws(1, "1"), ws(2, "2")];
     let (label, use_markup) = format_label(&workspaces, 1, &cfg);

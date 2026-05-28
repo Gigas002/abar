@@ -1,21 +1,12 @@
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
-#[cfg(any(
-    feature = "clock",
-    feature = "keyboard",
-    feature = "workspaces",
-    feature = "window"
-))]
+#[cfg(feature = "clock")]
 use std::sync::Arc;
-#[cfg(any(feature = "keyboard", feature = "workspaces"))]
-use std::sync::RwLock;
 #[cfg(feature = "clock")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use wayland_client::protocol::wl_keyboard;
-#[cfg(feature = "keyboard")]
-use wayland_client::protocol::wl_keyboard::KeymapFormat;
 
 use rustix::event::{PollFd, PollFlags, poll};
 use tracing::{debug, warn};
@@ -83,8 +74,6 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         computed: None,
         pointer: PointerState::default(),
         keyboard: None,
-        #[cfg(feature = "keyboard")]
-        kb: KeyboardWlState::default(),
         submenu: None,
         icon_cache: IconCache::new(),
         font: None,
@@ -97,10 +86,6 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         clock_timezones: Vec::new(),
         #[cfg(feature = "clock")]
         clock_formats: Vec::new(),
-        #[cfg(feature = "workspaces")]
-        workspaces_state: Arc::new(RwLock::new(
-            crate::modules::workspaces::WorkspacesDisplayState::default(),
-        )),
     };
 
     // Spawn clock background task.
@@ -117,15 +102,10 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         spawn::ensure_runtime()?.spawn(clock_task(tx, wakeup, clock_cfg, tz_index));
     }
 
-    // Load keyboard fallback labels; real layout names arrive via wl_keyboard.keymap.
+    // Spawn exec handler for keyboard if configured; initial label is already set in BarSpec.
     #[cfg(feature = "keyboard")]
-    if let Some(kb_cfg) = modules.keyboard {
-        state.kb.config_layouts = kb_cfg.layouts;
-    }
-
-    // Spawn a Hyprland event socket listener when both features are active.
-    // Delivers real-time layout names without requiring keyboard focus on the bar.
-    #[cfg(all(feature = "keyboard", feature = "hyprland"))]
+    if let Some(kb_cfg) = modules.keyboard
+        && let Some(cmd) = kb_cfg.exec
     {
         let has_keyboard = state
             .spec
@@ -142,22 +122,24 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 path: "/dev/null".into(),
                 source,
             })?;
-            let xkb_layouts = Arc::clone(&state.kb.xkb_layouts);
-            let last_hyprland_layout = Arc::clone(&state.kb.last_hyprland_layout);
-            let config_layouts = state.kb.config_layouts.clone();
-            spawn::ensure_runtime()?.spawn(hyprland_keyboard_task(
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::keyboard::KeyboardData,
+                _,
+            >(
+                "keyboard".to_string(),
+                cmd,
                 tx,
                 wakeup,
-                xkb_layouts,
-                last_hyprland_layout,
-                config_layouts,
+                |data| ModuleUpdate::text("keyboard", data.label),
             ));
         }
     }
 
-    // Spawn a Hyprland workspace listener when the workspaces feature is active.
+    // Spawn exec handler for workspaces if configured.
     #[cfg(feature = "workspaces")]
-    if let Some(ws_cfg) = modules.workspaces {
+    if let Some(ws_cfg) = modules.workspaces
+        && let Some(cmd) = ws_cfg.exec
+    {
         let has_workspaces = state
             .spec
             .layout
@@ -173,14 +155,25 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 path: "/dev/null".into(),
                 source,
             })?;
-            let ws_state = Arc::clone(&state.workspaces_state);
-            spawn::ensure_runtime()?.spawn(hyprland_workspaces_task(tx, wakeup, ws_cfg, ws_state));
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::ScriptLine,
+                _,
+            >(
+                "workspaces".to_string(),
+                cmd,
+                tx,
+                wakeup,
+                |line| ModuleUpdate::from_script("workspaces", line),
+            ));
         }
     }
 
-    // Spawn a Hyprland active-window listener when the window feature is active.
+    // Spawn exec handler for window if configured.
     #[cfg(feature = "window")]
-    if let Some(window_cfg) = modules.window {
+    if let Some(window_cfg) = modules.window
+        && let Some(cmd) = window_cfg.exec
+    {
+        let max_length = window_cfg.max_length;
         let has_window = state
             .spec
             .layout
@@ -196,7 +189,64 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 path: "/dev/null".into(),
                 source,
             })?;
-            spawn::ensure_runtime()?.spawn(hyprland_window_task(tx, wakeup, window_cfg));
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::ScriptLine,
+                _,
+            >(
+                "window".to_string(),
+                cmd,
+                tx,
+                wakeup,
+                move |line| {
+                    let mut update = ModuleUpdate::from_script("window", line);
+                    if max_length > 0 {
+                        update.text =
+                            crate::modules::window::truncate_title(&update.text, max_length);
+                    }
+                    update
+                },
+            ));
+        }
+    }
+
+    // Spawn exec handler for mpris if configured.
+    #[cfg(feature = "mpris")]
+    if let Some(mpris_cfg) = modules.mpris
+        && let Some(cmd) = mpris_cfg.exec
+    {
+        let max_length = mpris_cfg.max_length;
+        let has_mpris = state
+            .spec
+            .layout
+            .left
+            .iter()
+            .chain(state.spec.layout.center.iter())
+            .chain(state.spec.layout.right.iter())
+            .flat_map(|island| island.segments.iter())
+            .any(|seg| seg.module_id == "mpris");
+        if has_mpris {
+            let tx = updates_tx.clone();
+            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
+                path: "/dev/null".into(),
+                source,
+            })?;
+            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
+                crate::modules::ScriptLine,
+                _,
+            >(
+                "mpris".to_string(),
+                cmd,
+                tx,
+                wakeup,
+                move |line| {
+                    let mut update = ModuleUpdate::from_script("mpris", line);
+                    if max_length > 0 {
+                        update.text =
+                            crate::modules::window::truncate_title(&update.text, max_length);
+                    }
+                    update
+                },
+            ));
         }
     }
 
@@ -302,385 +352,14 @@ async fn clock_task(
         let fmt = config.formats.first().map_or("%H:%M", |s| s.as_str());
         let label = crate::modules::clock::current_label(fmt, tz);
 
-        let _ = tx.try_send(ModuleUpdate {
-            module_id: "clock".to_string(),
-            label,
-        });
+        let _ = tx.try_send(ModuleUpdate::text("clock", label));
         let _ = wakeup.write_all(&[0u8]);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Hyprland keyboard background task
-// ---------------------------------------------------------------------------
-
-#[cfg(all(feature = "keyboard", feature = "hyprland"))]
-fn resolve_keyboard_label(
-    raw_name: &str,
-    xkb_layouts: &[String],
-    config_layouts: &[String],
-) -> String {
-    let idx = xkb_layouts.iter().position(|n| n == raw_name);
-    match idx {
-        Some(i) => crate::modules::keyboard::current_label(xkb_layouts, config_layouts, i as u32),
-        None => raw_name.to_owned(),
-    }
-}
-
-#[cfg(all(feature = "keyboard", feature = "hyprland"))]
-async fn fetch_keyboard_label(
-    xkb_layouts: &Arc<RwLock<Vec<String>>>,
-    last_hyprland_layout: &Arc<RwLock<Option<String>>>,
-    config_layouts: &[String],
-) -> Option<String> {
-    use hyprland::data::Devices;
-    use hyprland::shared::HyprData;
-
-    let devices = Devices::get_async().await.ok()?;
-    let active_keymap = devices
-        .keyboards
-        .iter()
-        .find(|kb| kb.main)
-        .or_else(|| devices.keyboards.first())
-        .map(|kb| kb.active_keymap.clone())?;
-
-    // Persist the raw name so the wl_keyboard Keymap handler can re-resolve it
-    // once xkb_layouts is populated (it may still be empty here at startup).
-    *last_hyprland_layout.write().unwrap() = Some(active_keymap.clone());
-
-    let xkb = xkb_layouts.read().unwrap();
-    Some(resolve_keyboard_label(&active_keymap, &xkb, config_layouts))
-}
-
-#[cfg(all(feature = "keyboard", feature = "hyprland"))]
-async fn hyprland_keyboard_task(
-    tx: mpsc::SyncSender<ModuleUpdate>,
-    wakeup: UnixStream,
-    xkb_layouts: Arc<RwLock<Vec<String>>>,
-    last_hyprland_layout: Arc<RwLock<Option<String>>>,
-    config_layouts: Vec<String>,
-) {
-    use hyprland::event_listener::{AsyncEventListener, LayoutEvent};
-    use std::io::Write;
-    use std::sync::Mutex;
-
-    let tx = Arc::new(tx);
-    let wakeup = Arc::new(Mutex::new(wakeup));
-    let config_layouts = Arc::new(config_layouts);
-
-    if let Some(label) =
-        fetch_keyboard_label(&xkb_layouts, &last_hyprland_layout, &config_layouts).await
-    {
-        let _ = tx.try_send(ModuleUpdate {
-            module_id: "keyboard".into(),
-            label,
-        });
-        let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-    }
-
-    let mut listener = AsyncEventListener::new();
-
-    let tx_c = Arc::clone(&tx);
-    let wakeup_c = Arc::clone(&wakeup);
-    let xkb_c = Arc::clone(&xkb_layouts);
-    let last_c = Arc::clone(&last_hyprland_layout);
-    let cfg_c = Arc::clone(&config_layouts);
-    listener.add_layout_changed_handler(move |data: LayoutEvent| {
-        let tx = Arc::clone(&tx_c);
-        let wakeup = Arc::clone(&wakeup_c);
-        let xkb = Arc::clone(&xkb_c);
-        let last = Arc::clone(&last_c);
-        let cfg = Arc::clone(&cfg_c);
-        Box::pin(async move {
-            *last.write().unwrap() = Some(data.layout_name.clone());
-            let label = {
-                let xkb = xkb.read().unwrap();
-                resolve_keyboard_label(&data.layout_name, &xkb, &cfg)
-            };
-            let _ = tx.try_send(ModuleUpdate {
-                module_id: "keyboard".into(),
-                label,
-            });
-            let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-        })
-    });
-
-    if let Err(e) = listener.start_listener_async().await {
-        tracing::warn!(error = %e, "hyprland keyboard listener stopped");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Hyprland workspaces background task
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "workspaces")]
-async fn hyprland_workspaces_task(
-    tx: mpsc::SyncSender<ModuleUpdate>,
-    wakeup: UnixStream,
-    config: crate::modules::workspaces::WorkspacesConfig,
-    ws_state: Arc<RwLock<crate::modules::workspaces::WorkspacesDisplayState>>,
-) {
-    use hyprland::event_listener::{
-        AsyncEventListener, WorkspaceEventData, WorkspaceMovedEventData,
-    };
-    use std::io::Write;
-    use std::sync::Mutex;
-
-    let config = Arc::new(config);
-    let tx = Arc::new(tx);
-    let wakeup = Arc::new(Mutex::new(wakeup));
-    let ws_state = Arc::new(ws_state);
-
-    // Send the initial workspace state before listening for events.
-    if let Some(label) = fetch_workspace_label(&config, &ws_state).await {
-        let _ = tx.try_send(ModuleUpdate {
-            module_id: "workspaces".to_string(),
-            label,
-        });
-        let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-    }
-
-    let mut listener = AsyncEventListener::new();
-
-    // Workspace changed (active workspace switch).
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_changed_handler(move |_data: WorkspaceEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some(label) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let _ = tx.try_send(ModuleUpdate {
-                        module_id: "workspaces".to_string(),
-                        label,
-                    });
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    // Workspace created.
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_added_handler(move |_data: WorkspaceEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some(label) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let _ = tx.try_send(ModuleUpdate {
-                        module_id: "workspaces".to_string(),
-                        label,
-                    });
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    // Workspace destroyed.
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_deleted_handler(move |_data: WorkspaceEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some(label) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let _ = tx.try_send(ModuleUpdate {
-                        module_id: "workspaces".to_string(),
-                        label,
-                    });
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    // Workspace moved to a different monitor (relevant for MonitorSpecific mode).
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        let ws_state = Arc::clone(&ws_state);
-        listener.add_workspace_moved_handler(move |_data: WorkspaceMovedEventData| {
-            let cfg = Arc::clone(&cfg);
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            let ws_state = Arc::clone(&ws_state);
-            Box::pin(async move {
-                if let Some(label) = fetch_workspace_label(&cfg, &ws_state).await {
-                    let _ = tx.try_send(ModuleUpdate {
-                        module_id: "workspaces".to_string(),
-                        label,
-                    });
-                    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-                }
-            })
-        });
-    }
-
-    if let Err(e) = listener.start_listener_async().await {
-        tracing::warn!(error = %e, "hyprland workspaces listener stopped");
-    }
-}
-
-/// Fetch the current workspace list from Hyprland, update the shared display state, and return the
-/// formatted label.
-#[cfg(feature = "workspaces")]
-async fn fetch_workspace_label(
-    config: &crate::modules::workspaces::WorkspacesConfig,
-    ws_state: &Arc<RwLock<crate::modules::workspaces::WorkspacesDisplayState>>,
-) -> Option<String> {
-    use crate::modules::workspaces::{VisibilityMode, WorkspaceInfo, WorkspacesDisplayState};
-    use hyprland::data::{Workspace, Workspaces};
-    use hyprland::shared::{HyprData, HyprDataActive};
-
-    let workspaces = Workspaces::get_async().await.ok()?;
-    let active = Workspace::get_active_async().await.ok()?;
-    let active_id = active.id;
-
-    let mut ws_list: Vec<WorkspaceInfo> = workspaces
-        .iter()
-        .filter(|w| match config.visibility_mode {
-            VisibilityMode::MonitorSpecific => w.monitor == active.monitor,
-            VisibilityMode::AllMonitors => true,
-        })
-        .map(|w| WorkspaceInfo {
-            id: w.id,
-            name: w.name.clone(),
-        })
-        .collect();
-    ws_list.sort_by_key(|w| w.id);
-
-    *ws_state.write().unwrap() = WorkspacesDisplayState {
-        workspaces: ws_list.clone(),
-        active_id,
-    };
-
-    let (label, _use_markup) =
-        crate::modules::workspaces::format_label(&ws_list, active_id, config);
-    Some(label)
-}
-
-// ---------------------------------------------------------------------------
-// Hyprland window background task
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "window")]
-async fn hyprland_window_task(
-    tx: mpsc::SyncSender<ModuleUpdate>,
-    wakeup: UnixStream,
-    config: crate::modules::window::WindowConfig,
-) {
-    use hyprland::data::Client;
-    use hyprland::event_listener::{AsyncEventListener, WindowEventData};
-    use hyprland::shared::HyprDataActiveOptional;
-    use std::io::Write;
-    use std::sync::Mutex;
-
-    let config = Arc::new(config);
-    let tx = Arc::new(tx);
-    let wakeup = Arc::new(Mutex::new(wakeup));
-
-    // Send the initial active window title before listening for events.
-    let initial_label = Client::get_active_async()
-        .await
-        .ok()
-        .flatten()
-        .map(|c| crate::modules::window::truncate_title(&c.title, config.max_length))
-        .unwrap_or_default();
-    let _ = tx.try_send(ModuleUpdate {
-        module_id: "window".to_string(),
-        label: initial_label,
-    });
-    let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-
-    let mut listener = AsyncEventListener::new();
-
-    {
-        let cfg = Arc::clone(&config);
-        let tx = Arc::clone(&tx);
-        let wakeup = Arc::clone(&wakeup);
-        listener.add_active_window_changed_handler(move |data: Option<WindowEventData>| {
-            let label = data
-                .map(|w| crate::modules::window::truncate_title(&w.title, cfg.max_length))
-                .unwrap_or_default();
-            let tx = Arc::clone(&tx);
-            let wakeup = Arc::clone(&wakeup);
-            Box::pin(async move {
-                let _ = tx.try_send(ModuleUpdate {
-                    module_id: "window".to_string(),
-                    label,
-                });
-                let _ = wakeup.lock().unwrap().write_all(&[0u8]);
-            })
-        });
-    }
-
-    if let Err(e) = listener.start_listener_async().await {
-        tracing::warn!(error = %e, "hyprland window listener stopped");
-    }
-}
-
-/// Switch to a Hyprland workspace by numeric ID via the Lua dispatcher.
-///
-/// Hyprland's Lua dispatcher wraps the IPC payload as `return hl.dispatch(<payload>)`.
-/// `hl.dispatch` expects a dispatcher object; the correct Lua expression is
-/// `hl.dsp.focus({ workspace = N })`, matching the keybinding syntax in keybindings.lua.
-/// `DispatchType::Custom` lets us pass arbitrary Lua as the dispatch payload without
-/// hyprland-rs trying to format it as the old `workspace N` string.
-#[cfg(feature = "workspaces")]
-fn hyprland_switch_workspace(id: i32) -> Result<(), String> {
-    use hyprland::dispatch::{Dispatch, DispatchType};
-    let expr = format!("hl.dsp.focus({{ workspace = {id} }})");
-    Dispatch::call(DispatchType::Custom(&expr, "")).map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
-
-#[cfg(feature = "keyboard")]
-#[derive(Default)]
-struct KeyboardWlState {
-    /// Layout names extracted from the compositor's XKB keymap.
-    /// Shared with the Hyprland task so it can map layout names to group indices.
-    xkb_layouts: Arc<RwLock<Vec<String>>>,
-    /// Currently active XKB group index (updated on modifiers events, requires focus).
-    active_group: u32,
-    /// Display labels from config (`[keyboard].layouts`); index matches XKB group order.
-    config_layouts: Vec<String>,
-    /// Last raw Hyprland layout name received (e.g. "English (US)").
-    /// Shared with the Hyprland task; written on every layout fetch/event so the
-    /// wl_keyboard Keymap handler can re-resolve it to a config label once
-    /// xkb_layouts is populated.
-    #[cfg(feature = "hyprland")]
-    last_hyprland_layout: Arc<RwLock<Option<String>>>,
-}
-
-#[cfg(all(feature = "keyboard", not(feature = "hyprland")))]
-impl KeyboardWlState {
-    fn current_label(&self) -> String {
-        let xkb = self.xkb_layouts.read().unwrap();
-        crate::modules::keyboard::current_label(&xkb, &self.config_layouts, self.active_group)
-    }
-}
 
 #[derive(Default)]
 struct PointerState {
@@ -733,8 +412,6 @@ struct AppState {
     computed: Option<ComputedBar>,
     pointer: PointerState,
     keyboard: Option<wl_keyboard::WlKeyboard>,
-    #[cfg(feature = "keyboard")]
-    kb: KeyboardWlState,
     submenu: Option<SubmenuState>,
     icon_cache: IconCache,
     font: Option<FontContext>,
@@ -748,8 +425,6 @@ struct AppState {
     clock_timezones: Vec<chrono_tz::Tz>,
     #[cfg(feature = "clock")]
     clock_formats: Vec<String>,
-    #[cfg(feature = "workspaces")]
-    workspaces_state: Arc<RwLock<crate::modules::workspaces::WorkspacesDisplayState>>,
 }
 
 impl AppState {
@@ -1042,41 +717,8 @@ impl AppState {
                     let fmt = self.clock_formats.first().map_or("%H:%M", |s| s.as_str());
                     crate::modules::clock::current_label(fmt, Some(tz))
                 };
-                if let Err(e) = self.apply_update(
-                    ModuleUpdate {
-                        module_id: "clock".to_string(),
-                        label,
-                    },
-                    _qh,
-                ) {
+                if let Err(e) = self.apply_update(ModuleUpdate::text("clock", label), _qh) {
                     warn!(error = %e, "clock tz update repaint failed");
-                }
-                return;
-            }
-        }
-
-        #[cfg(feature = "workspaces")]
-        if matches!(action, PointerAction::LeftClick) {
-            let ws_seg_info = {
-                let computed = self.computed.as_ref().unwrap();
-                crate::hit_test::hit_test(computed, x, y)
-                    .filter(|s| s.module_id == "workspaces")
-                    .map(|s| (s.x, s.width, s.use_markup))
-            };
-            if let Some((seg_x, seg_width, use_markup)) = ws_seg_info {
-                if let Some(font) = self.font.as_ref() {
-                    let state = self.workspaces_state.read().unwrap();
-                    if let Some(id) = crate::modules::workspaces::workspace_at_x(
-                        x,
-                        seg_x,
-                        seg_width,
-                        &state,
-                        use_markup,
-                        &|text| font.measure(text),
-                    ) && let Err(e) = hyprland_switch_workspace(id)
-                    {
-                        warn!(error = %e, workspace = id, "failed to switch workspace");
-                    }
                 }
                 return;
             }
@@ -1168,7 +810,8 @@ impl AppState {
         let Some(seg) = found else {
             return Ok(());
         };
-        seg.label = update.label;
+        seg.label = update.text;
+        seg.use_markup = update.use_markup;
 
         // Only repaint once the layer surface has been configured and painted at least once.
         if self.computed.is_none() {
@@ -1536,100 +1179,17 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        match event {
-            // Esc (evdev key 1) closes any open submenu.
-            wl_keyboard::Event::Key {
-                key,
-                state: key_state,
-                ..
-            } => {
-                use wayland_client::protocol::wl_keyboard::KeyState;
-                if key_state == WEnum::Value(KeyState::Pressed) && key == 1 {
-                    state.close_submenu(qh);
-                }
+        // Esc (evdev key 1) closes any open submenu.
+        if let wl_keyboard::Event::Key {
+            key,
+            state: key_state,
+            ..
+        } = event
+        {
+            use wayland_client::protocol::wl_keyboard::KeyState;
+            if key_state == WEnum::Value(KeyState::Pressed) && key == 1 {
+                state.close_submenu(qh);
             }
-            #[cfg(feature = "keyboard")]
-            wl_keyboard::Event::Keymap { format, fd, size } => {
-                if format != WEnum::Value(KeymapFormat::XkbV1) {
-                    return;
-                }
-                // Use libxkbcommon directly: new_from_fd mmaps the FD so the
-                // file-position issue (compositor sends FD at EOF) is irrelevant.
-                use xkbcommon::xkb;
-                let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-                // SAFETY: fd is a valid owned memfd from the compositor, live for this call.
-                let Ok(Some(km)) = (unsafe {
-                    xkb::Keymap::new_from_fd(
-                        &ctx,
-                        fd,
-                        size as usize,
-                        xkb::KEYMAP_FORMAT_TEXT_V1,
-                        xkb::KEYMAP_COMPILE_NO_FLAGS,
-                    )
-                }) else {
-                    return;
-                };
-                let layouts: Vec<String> = (0..km.num_layouts())
-                    .map(|i| km.layout_get_name(i).to_string())
-                    .collect();
-                debug!(xkb_layouts = ?layouts, "parsed XKB keyboard layout names");
-                *state.kb.xkb_layouts.write().unwrap() = layouts;
-                // With the hyprland feature, the keyboard task owns the label.
-                // xkb_layouts is populated here for the first time; re-resolve the
-                // last known raw Hyprland layout name so the initial label shows the
-                // correct config label instead of the raw XKB name.
-                #[cfg(feature = "hyprland")]
-                {
-                    let raw = state.kb.last_hyprland_layout.read().unwrap().clone();
-                    if let Some(raw_name) = raw {
-                        let xkb = state.kb.xkb_layouts.read().unwrap();
-                        let label =
-                            resolve_keyboard_label(&raw_name, &xkb, &state.kb.config_layouts);
-                        drop(xkb);
-                        if let Err(e) = state.apply_update(
-                            ModuleUpdate {
-                                module_id: "keyboard".into(),
-                                label,
-                            },
-                            qh,
-                        ) {
-                            warn!(error = %e, "keyboard keymap repaint failed");
-                        }
-                    }
-                }
-                #[cfg(not(feature = "hyprland"))]
-                {
-                    let label = state.kb.current_label();
-                    if let Err(e) = state.apply_update(
-                        ModuleUpdate {
-                            module_id: "keyboard".into(),
-                            label,
-                        },
-                        qh,
-                    ) {
-                        warn!(error = %e, "keyboard keymap repaint failed");
-                    }
-                }
-            }
-            #[cfg(feature = "keyboard")]
-            wl_keyboard::Event::Modifiers { group, .. } => {
-                // Only received when the bar surface has keyboard focus.
-                state.kb.active_group = group;
-                #[cfg(not(feature = "hyprland"))]
-                {
-                    let label = state.kb.current_label();
-                    if let Err(e) = state.apply_update(
-                        ModuleUpdate {
-                            module_id: "keyboard".into(),
-                            label,
-                        },
-                        qh,
-                    ) {
-                        warn!(error = %e, "keyboard modifiers repaint failed");
-                    }
-                }
-            }
-            _ => {}
         }
     }
 }
