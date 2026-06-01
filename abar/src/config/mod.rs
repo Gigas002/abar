@@ -16,7 +16,7 @@ pub(crate) use events::events_for_module;
 pub use layout::Layout;
 #[allow(unused_imports)]
 pub use layout::LayoutEntry;
-pub use modules::{Clock, Keyboard, Modules, Mpris, Window, Workspaces};
+pub use modules::{Clock, Keyboard, Modules, Mpris, Tray, Window, Workspaces};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -28,6 +28,7 @@ pub struct Config {
     pub workspaces: Option<Workspaces>,
     pub window: Option<Window>,
     pub mpris: Option<Mpris>,
+    pub tray: Option<Tray>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,6 +59,7 @@ impl Default for Config {
             workspaces: None,
             window: None,
             mpris: None,
+            tray: None,
         }
     }
 }

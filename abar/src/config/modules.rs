@@ -66,3 +66,13 @@ pub struct Mpris {
     #[serde(flatten)]
     pub events: Option<Events>,
 }
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct Tray {
+    pub exec: Option<String>,
+    /// When `true`, each tray item's `app_id` is appended to `on_left_click` at click time.
+    #[serde(default)]
+    pub feed_id: bool,
+    #[serde(flatten)]
+    pub events: Option<Events>,
+}
