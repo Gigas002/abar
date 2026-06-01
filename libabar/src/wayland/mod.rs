@@ -86,6 +86,12 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         clock_timezones: Vec::new(),
         #[cfg(feature = "clock")]
         clock_formats: Vec::new(),
+        #[cfg(feature = "tray")]
+        tray_rx: None,
+        #[cfg(feature = "tray")]
+        tray_events: crate::model::SegmentEvents::default(),
+        #[cfg(feature = "tray")]
+        tray_feed_id: false,
     };
 
     // Spawn clock background task.
@@ -250,6 +256,36 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         }
     }
 
+    // Spawn exec handler for tray if configured.
+    #[cfg(feature = "tray")]
+    if let Some(tray_cfg) = modules.tray
+        && let Some(cmd) = tray_cfg.exec
+    {
+        let has_tray = state
+            .spec
+            .layout
+            .left
+            .iter()
+            .chain(state.spec.layout.center.iter())
+            .chain(state.spec.layout.right.iter())
+            .flat_map(|island| island.segments.iter())
+            .any(|seg| seg.module_id == "tray");
+        if has_tray {
+            let (tray_tx, tray_rx) =
+                mpsc::sync_channel::<Vec<crate::modules::tray::ipc::MinimalTrayItem>>(16);
+            state.tray_rx = Some(tray_rx);
+            state.tray_events = tray_cfg.events.clone();
+            state.tray_feed_id = tray_cfg.feed_id;
+            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
+                path: "/dev/null".into(),
+                source,
+            })?;
+            spawn::ensure_runtime()?.spawn(crate::modules::tray::run_tray_exec_handler(
+                cmd, tray_tx, wakeup,
+            ));
+        }
+    }
+
     // Suppress unused-variable warning when no module features are active.
     let _ = modules;
     // All tasks that need the wakeup sender now hold their own clones; drop ours.
@@ -268,6 +304,16 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         while let Ok(update) = state.updates_rx.try_recv() {
             if let Err(e) = state.apply_update(update, &qh) {
                 warn!(error = %e, "module update repaint failed");
+            }
+        }
+
+        // Apply any tray item list updates.
+        #[cfg(feature = "tray")]
+        loop {
+            let items = state.tray_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+            let Some(items) = items else { break };
+            if let Err(e) = state.apply_tray_update(items, &qh) {
+                warn!(error = %e, "tray update repaint failed");
             }
         }
 
@@ -425,6 +471,12 @@ struct AppState {
     clock_timezones: Vec<chrono_tz::Tz>,
     #[cfg(feature = "clock")]
     clock_formats: Vec<String>,
+    #[cfg(feature = "tray")]
+    tray_rx: Option<mpsc::Receiver<Vec<crate::modules::tray::ipc::MinimalTrayItem>>>,
+    #[cfg(feature = "tray")]
+    tray_events: crate::model::SegmentEvents,
+    #[cfg(feature = "tray")]
+    tray_feed_id: bool,
 }
 
 impl AppState {
@@ -812,6 +864,113 @@ impl AppState {
         };
         seg.label = update.text;
         seg.use_markup = update.use_markup;
+
+        // Only repaint once the layer surface has been configured and painted at least once.
+        if self.computed.is_none() {
+            return Ok(());
+        }
+        let Some(shm) = self.shm.clone() else {
+            return Ok(());
+        };
+        self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
+    }
+
+    /// Replace tray segments in the layout with one icon-only segment per visible item,
+    /// then repaint. No-op if the bar hasn't been painted yet or no tray slot exists.
+    #[cfg(feature = "tray")]
+    fn apply_tray_update(
+        &mut self,
+        items: Vec<crate::modules::tray::ipc::MinimalTrayItem>,
+        qh: &QueueHandle<Self>,
+    ) -> Result<(), AbarError> {
+        use crate::model::Segment;
+        use crate::modules::tray::ipc::TrayItemStatus;
+
+        // Build one segment per visible item.
+        // Icon resolution order: icon_handle → title (as FreeDesktop name) → text fallback.
+        // Events come from config; when feed_id is set every command gets ` <app_id>` appended.
+        let size = self.spec.style.font_size.round() as u32;
+        let tray_feed_id = self.tray_feed_id;
+        let tray_events = self.tray_events.clone();
+        let mut new_segs: Vec<Segment> = Vec::new();
+        for i in items.iter().filter(|i| i.status != TrayItemStatus::Passive) {
+            // Prefer icon_handle; fall back to title as a FreeDesktop icon name.
+            let icon_name = i
+                .icon_handle
+                .as_deref()
+                .or(i.title.as_deref())
+                .and_then(|name| self.icon_cache.get(name, size).map(|_| name.to_string()));
+            let mut seg = match icon_name {
+                Some(name) => Segment::icon_only(format!("tray:{}", i.app_id), name),
+                None => {
+                    // No resolvable icon: show title or app_id as text so the item is
+                    // still visible and clickable.
+                    let label = i.title.as_deref().unwrap_or(&i.app_id).to_string();
+                    Segment::new(format!("tray:{}", i.app_id), label)
+                }
+            };
+            let mut events = tray_events.clone();
+            if tray_feed_id {
+                let id = &i.app_id;
+                let append = |opt: Option<String>| opt.map(|cmd| format!("{cmd} {id}"));
+                events.on_left_click = append(events.on_left_click);
+                events.on_right_click = append(events.on_right_click);
+                events.on_middle_click = append(events.on_middle_click);
+                events.on_scroll_up = append(events.on_scroll_up);
+                events.on_scroll_down = append(events.on_scroll_down);
+            }
+            seg.events = events;
+            new_segs.push(seg);
+        }
+
+        // Locate the island that holds the "tray" placeholder or existing "tray:*" segments.
+        let pos = {
+            let zones: [&Vec<crate::model::Island>; 3] = [
+                &self.spec.layout.left,
+                &self.spec.layout.center,
+                &self.spec.layout.right,
+            ];
+            let mut found = None;
+            'find: for (zi, zone) in zones.iter().enumerate() {
+                for (ii, island) in zone.iter().enumerate() {
+                    if island
+                        .segments
+                        .iter()
+                        .any(|s| s.module_id == "tray" || s.module_id.starts_with("tray:"))
+                    {
+                        found = Some((zi, ii));
+                        break 'find;
+                    }
+                }
+            }
+            found
+        };
+
+        let Some((zone_idx, island_idx)) = pos else {
+            return Ok(());
+        };
+
+        let zone = match zone_idx {
+            0 => &mut self.spec.layout.left,
+            1 => &mut self.spec.layout.center,
+            _ => &mut self.spec.layout.right,
+        };
+        let island = &mut zone[island_idx];
+
+        // Find the contiguous span of existing tray segments and splice in the new ones.
+        let tray_start = island
+            .segments
+            .iter()
+            .position(|s| s.module_id == "tray" || s.module_id.starts_with("tray:"))
+            .unwrap_or(0);
+        let tray_count = island
+            .segments
+            .iter()
+            .filter(|s| s.module_id == "tray" || s.module_id.starts_with("tray:"))
+            .count();
+        island
+            .segments
+            .splice(tray_start..tray_start + tray_count, new_segs);
 
         // Only repaint once the layer surface has been configured and painted at least once.
         if self.computed.is_none() {
