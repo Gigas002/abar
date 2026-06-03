@@ -11,10 +11,6 @@
 #   DMENU_CMD   override the dmenu command passed to trayctl
 #               (default: "tofi --mode dmenu")
 
-# trayctl writes tracing logs to stdout; silence them regardless of the
-# RUST_LOG inherited from the parent process (e.g. abar running with debug).
-export RUST_LOG=off
-
 DMENU_CMD="${DMENU_CMD:-tofi --mode dmenu}"
 
 # When called with an app_id argument (feed_id = true in config), open its
