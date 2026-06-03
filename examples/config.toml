@@ -101,7 +101,7 @@ on_left_click = "$TERMINAL -e calendar-tui"
 [tray]
 exec = "~/.config/abar/scripts/tray/tray.sh"
 # on_left_click = "$TERMINAL -e tray-tui"
-# When feed_id = true, the app_id of the clicked tray item is automatically
-# appended as an argument to on_left_click, e.g. `tray-menu.sh <app_id>`.
+# When feed_id = true, each tray item's app_id is appended to every configured
+# on_* handler when tray segments update, e.g. `tray-menu.sh <app_id>`.
 feed_id = true
 on_left_click = "~/.config/abar/scripts/tray/tray-menu.sh"

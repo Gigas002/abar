@@ -888,7 +888,7 @@ impl AppState {
 
         // Build one segment per visible item.
         // Icon resolution order: icon_handle → title (as FreeDesktop name) → text fallback.
-        // Events come from config; when feed_id is set every command gets ` <app_id>` appended.
+        // Events from config; when feed_id is set, each configured on_* command gets ` <app_id>` appended.
         let size = self.spec.style.font_size.round() as u32;
         let tray_feed_id = self.tray_feed_id;
         let tray_events = self.tray_events.clone();

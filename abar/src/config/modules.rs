@@ -70,7 +70,8 @@ pub struct Mpris {
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Tray {
     pub exec: Option<String>,
-    /// When `true`, each tray item's `app_id` is appended to `on_left_click` at click time.
+    /// When `true`, each tray item's `app_id` is appended to every configured `on_*`
+    /// handler when tray segments are rebuilt (e.g. `tray-menu.sh <app_id>`).
     #[serde(default)]
     pub feed_id: bool,
     #[serde(flatten)]
