@@ -197,6 +197,31 @@ fn build_module_configs(
         Some(MprisConfig { max_length, exec })
     };
 
+    #[cfg(feature = "tray")]
+    let tray = {
+        use libabar::SegmentEvents;
+        use libabar::modules::tray::TrayConfig;
+        _config.tray.as_ref().map(|t| {
+            set_segment_label(_layout, "tray", "");
+            let events = t
+                .events
+                .as_ref()
+                .map(|e| SegmentEvents {
+                    on_left_click: e.on_left_click.clone(),
+                    on_right_click: e.on_right_click.clone(),
+                    on_middle_click: e.on_middle_click.clone(),
+                    on_scroll_up: e.on_scroll_up.clone(),
+                    on_scroll_down: e.on_scroll_down.clone(),
+                })
+                .unwrap_or_default();
+            TrayConfig {
+                exec: t.exec.clone(),
+                feed_id: t.feed_id,
+                events,
+            }
+        })
+    };
+
     ModuleConfigs {
         #[cfg(feature = "clock")]
         clock,
@@ -208,6 +233,8 @@ fn build_module_configs(
         window,
         #[cfg(feature = "mpris")]
         mpris,
+        #[cfg(feature = "tray")]
+        tray,
     }
 }
 
@@ -217,6 +244,7 @@ fn build_module_configs(
     feature = "workspaces",
     feature = "window",
     feature = "mpris",
+    feature = "tray",
 ))]
 fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
     for island in layout

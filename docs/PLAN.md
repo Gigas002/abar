@@ -345,9 +345,19 @@ Existing workflows (`build`, `fmt-clippy`, `test`, `doc`, `typos`, `deny`) shoul
 
 ### Phase 9 — **Tray** (must-have)
 
-> Architecture is **TBD** — `trayd` is under active development. No D-Bus / `zbus` inside abar. Plan this phase once `trayd`'s interface stabilises.
+> Tray follows the same **exec-handler** architecture as `keyboard`, `workspaces`, and `window`. `trayd` owns all D-Bus / SNI logic; a user-provided script (reference: `scripts/tray.sh`) speaks the trayd socket protocol directly (via `socat` or equivalent), subscribes to the event stream, and outputs one JSON array of items per line to stdout. abar reads those lines exactly like any other exec module. Menu interaction is delegated to `trayctl menu --app-id <id>`. No Unix-socket client, no `zbus`, no `libdbus` inside abar. No new `trayctl` subcommand required.
 
-- [ ] _(to be defined)_
+Behind a **`tray`** Cargo feature in `libabar` and `abar`.
+
+- [x] **Item types** (`libabar/src/modules/tray/ipc.rs`): `MinimalTrayItem { app_id, title?, status, icon_handle? }` and `TrayItemStatus` (Active / Passive / NeedsAttention). `Passive` items are skipped at render time.
+- [x] **Reference script** (`scripts/tray.sh`): long-running script that connects to `$XDG_RUNTIME_DIR/trayd.sock` via `socat`, sends `{"v":1,"cmd":"subscribe"}`, and for each incoming `{"type":"event","event":{"kind":"update","items":[...]}}` line extracts and prints the items array as a single JSON line to stdout (using `jq`). Restarts automatically on disconnect (while loop). Mirrors the structure of `scripts/keyboard.sh`.
+- [x] **Tray exec handler** (`libabar/src/modules/tray/mod.rs`): `TrayConfig { exec: Option<String>, dmenu_cmd: Option<String> }`. The exec handler deserialises each stdout line as `Vec<MinimalTrayItem>` (reusing `run_exec_handler` from `libabar/src/exec/`); holds the latest item list; sends a `ModuleUpdate` per visible item to the Wayland run loop. On left-click, spawns `trayctl menu --app-id <app_id>` (appending `--dmenu-cmd <cmd>` if configured) via the existing `spawn` infrastructure. Icon resolved from `icon_handle` via the Phase 4 FreeDesktop icon path; items without a resolvable icon are skipped.
+- [x] **Config** (`abar/src/config/modules.rs`): add `Tray { exec: Option<String>, dmenu_cmd: Option<String> }` deserialising from `[tray]`; update `examples/config.toml` with a `[tray]` entry and `exec = "~/.config/abar/scripts/tray.sh"` example.
+- [x] **Settings wiring** (`abar/src/settings/mod.rs`): map `config::Tray` → `libabar::TrayConfig`; add initial segment label wiring; guard with `#[cfg(feature = "tray")]`; add `tray` to the `ModuleConfigs` constructor and the `set_segment_label` `cfg(any(...))` gate.
+- [x] **Wayland run-loop wiring** (`libabar/src/wayland/mod.rs`): spawn the tray exec handler on the Tokio runtime when `modules.tray` is `Some` and `exec` is set; wire click events to `trayctl menu` spawn.
+- [x] **Layout + render integration**: tray segments use the existing icon `Segment` / `PlacedSegment` path; `use_markup = false`; each visible item maps to one segment whose `icon` is the resolved FreeDesktop name from `icon_handle`.
+
+**Verify**: unit test — spawn a trivial script that emits `[{"app_id":"x","status":"Active","icon_handle":"network-wireless"}]` and exits; assert the exec channel receives the item. Manual: run `tray.sh` as the `exec` command, confirm icons appear; click an item, confirm `trayctl menu` opens the dmenu picker; stop `trayd`, confirm the bar stays running with an empty tray.
 
 ### Phase 10 — Polish + first release
 
@@ -416,3 +426,6 @@ Update this plan when:
 | 2026-05-21 | **Architecture decision (issue #8):** ban compositor IPC libs from abar; `workspaces`/`window`/`keyboard` become IPC-handler modules (Tier 3); insert Phase 7 (IPC protocol + receiver) and Phase 8 (refactor compositor modules) before old Phase 7; renumber old 7→9, 8→10; update §1.3, §5.2, §6, §9                                         |
 | 2026-05-21 | **No D-Bus/zbus in abar:** `tray` becomes Tier 3 IPC handler — `trayd` owns StatusNotifier/D-Bus, pushes JSON to abar; `mpris` uses `playerctl`-based external daemon; `zbus`/`dbus` added to banned-dep list (§1.3, §5.3–5.4, §6, §9, §10)                                                                                                     |
 | 2026-05-21 | **exec-handler model:** replace Unix socket IPC with stdout-pipe-from-child-process; `exec` field per module config; abar reads newline-delimited `ModuleUpdate { text, icon?, markup? }`; script is thick layer for compositor specifics; Phase 7 rewritten; Phase 9 (tray) marked TBD; `scripts/keyboard.sh` + `docs/EXEC.md` added to layout |
+| 2026-06-01 | **Phase 9 (tray) fully specified:** `trayd` IPC client (Unix socket NDJSON, `subscribe` stream, `get_pixmap` one-shots, exponential reconnect), pixmap cache, `TrayConfig`, tray module (Passive items skipped, click → spawn `trayctl`), `[tray]` config table, settings wiring, `tray` feature gate                                           |
+| 2026-06-01 | **Phase 9 redesigned as exec-handler:** tray follows the same pattern as keyboard/workspaces/window — `trayctl subscribe` streams JSON arrays to stdout, abar reads via `run_exec_handler`; no Unix-socket client in abar; pixmaps replaced by FreeDesktop icon resolution via `icon_handle`                                                    |
+| 2026-06-01 | **Phase 9 script route:** no new trayctl subcommand; `scripts/tray.sh` reference script speaks trayd socket directly via socat+jq (same pattern as keyboard.sh); `trayctl subscribe` mention removed from plan                                                                                                                                  |

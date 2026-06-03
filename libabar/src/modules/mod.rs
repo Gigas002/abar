@@ -72,6 +72,8 @@ pub struct ModuleConfigs {
     pub window: Option<window::WindowConfig>,
     #[cfg(feature = "mpris")]
     pub mpris: Option<mpris::MprisConfig>,
+    #[cfg(feature = "tray")]
+    pub tray: Option<tray::TrayConfig>,
 }
 
 #[cfg(feature = "clock")]
@@ -80,6 +82,8 @@ pub mod clock;
 pub mod keyboard;
 #[cfg(feature = "mpris")]
 pub mod mpris;
+#[cfg(feature = "tray")]
+pub mod tray;
 #[cfg(feature = "window")]
 pub mod window;
 #[cfg(feature = "workspaces")]
