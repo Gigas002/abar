@@ -87,7 +87,7 @@ fn make_segment(name: &str, modules: Option<&Modules>) -> Segment {
             .collect();
         return seg;
     }
-    // Built-in modules: text placeholder until their own phase adds live data.
+    // Built-in modules: text placeholder until exec script provides live data.
     let mut seg = Segment::new(name, builtin_label(name));
     seg.display_mode = DisplayMode::TextOnly;
     seg

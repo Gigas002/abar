@@ -306,8 +306,6 @@ fn draw_segment_text(
 }
 
 /// Paint an icon centered within the segment rect.
-///
-/// Used for custom modules; the same helper will be reused by tray item pixmaps in Phase 7.
 fn draw_segment_icon(
     cr: &Context,
     icons: &mut IconCache,
