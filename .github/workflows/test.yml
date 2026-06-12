@@ -44,7 +44,7 @@ jobs:
         run: |
           cargo llvm-cov --all-features -p abar --lcov --output-path lcov-abar.info
       - name: Upload libabar coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: ./lcov-libabar.info
           flags: libabar
@@ -54,7 +54,7 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload abar coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: ./lcov-abar.info
           flags: abar
