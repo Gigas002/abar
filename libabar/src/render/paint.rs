@@ -328,6 +328,21 @@ fn draw_segment_icon(
     cr.rectangle(tx, ty, size, size);
     cr.fill()
         .map_err(|e| AbarError::Render(format!("fill icon rect: {e}")))?;
+
+    if let Some(overlay_name) = &seg.overlay_icon_name {
+        let overlay_size = size * 0.55;
+        let overlay_px = overlay_size.round().max(1.0) as u32;
+        if let Some(overlay_surface) = icons.get(overlay_name, overlay_px) {
+            let ox = tx + size - overlay_size;
+            let oy = ty + size - overlay_size;
+            cr.set_source_surface(overlay_surface, ox, oy)
+                .map_err(|e| AbarError::Render(format!("set_source_surface overlay: {e}")))?;
+            cr.rectangle(ox, oy, overlay_size, overlay_size);
+            cr.fill()
+                .map_err(|e| AbarError::Render(format!("fill overlay rect: {e}")))?;
+        }
+    }
+
     cr.restore()
         .map_err(|e| AbarError::Render(format!("cr restore after icon: {e}")))?;
 

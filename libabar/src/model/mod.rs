@@ -59,6 +59,8 @@ pub struct Segment {
     /// Popup submenu items; non-empty means a left click opens the submenu instead of
     /// executing `events.on_left_click`.
     pub submenu: Vec<SubmenuItemConfig>,
+    /// Optional emblem icon painted on top of `icon_name` (tray overlay badges).
+    pub overlay_icon_name: Option<String>,
 }
 
 impl Segment {
@@ -72,6 +74,7 @@ impl Segment {
             events: SegmentEvents::default(),
             use_markup: false,
             submenu: Vec::new(),
+            overlay_icon_name: None,
         }
     }
 
@@ -86,6 +89,7 @@ impl Segment {
             events: SegmentEvents::default(),
             use_markup: false,
             submenu: Vec::new(),
+            overlay_icon_name: None,
         }
     }
 

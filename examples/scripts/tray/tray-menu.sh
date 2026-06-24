@@ -23,8 +23,8 @@ fi
 items=$(trayctl items 2>/dev/null) || exit 1
 [ -z "$items" ] && exit 0
 
-# Build a display list: prefer title, fall back to app_id.
-display=$(printf '%s' "$items" | jq -r '.[] | (.title // .app_id)')
+# Build a display list: prefer tooltip_title, then title, then app_id.
+display=$(printf '%s' "$items" | jq -r '.[] | (.tooltip_title // .title // .app_id)')
 [ -z "$display" ] && exit 0
 
 selected=$(printf '%s\n' "$display" | tofi --mode dmenu 2>/dev/null)
@@ -33,7 +33,7 @@ selected=$(printf '%s\n' "$display" | tofi --mode dmenu 2>/dev/null)
 # Map display name back to app_id (first match).
 app_id=$(printf '%s' "$items" \
     | jq -r --arg sel "$selected" \
-        '.[] | select((.title // .app_id) == $sel) | .app_id' \
+        '.[] | select((.tooltip_title // .title // .app_id) == $sel) | .app_id' \
     | head -1)
 [ -z "$app_id" ] && exit 0
 

@@ -58,17 +58,30 @@ one SNI tray item:
 
 ```json
 [
-  { "app_id": "nm-applet", "title": "Network", "status": "Active", "icon_handle": "network-wireless" },
-  { "app_id": "pasystray", "title": null,       "status": "Passive", "icon_handle": null }
+  {
+    "app_id": "nm-applet",
+    "title": "Network",
+    "status": "Active",
+    "icon_handle": "network-wireless",
+    "category": "ApplicationStatus",
+    "tooltip_title": "Network",
+    "overlay_icon_handle": "network-wireless-encrypted"
+  },
+  { "app_id": "pasystray", "title": null, "status": "Passive", "icon_handle": null }
 ]
 ```
 
-| Field         | Type            | Required | Description |
-|---------------|-----------------|----------|-------------|
-| `app_id`      | string          | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`). |
-| `title`       | string \| null  | no       | Human-readable name shown in fallback pickers. |
-| `status`      | string          | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered. |
-| `icon_handle` | string \| null  | no       | FreeDesktop icon name. Items without a resolvable icon are skipped. |
+| Field                 | Type            | Required | Description |
+|-----------------------|-----------------|----------|-------------|
+| `app_id`              | string          | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`). |
+| `title`               | string \| null  | no       | Human-readable name shown in fallback pickers. |
+| `status`              | string          | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered. |
+| `icon_handle`         | string \| null  | no       | FreeDesktop icon name. For `NeedsAttention`, trayd may substitute the attention icon. |
+| `category`            | string \| null  | no       | SNI category (`ApplicationStatus`, `Communications`, `SystemServices`, `Hardware`). |
+| `item_is_menu`        | bool            | no       | `true` when the item is menu-only (defaults to `false`). |
+| `tooltip_title`       | string \| null  | no       | Tooltip title; used as the segment label fallback when no icon is shown. |
+| `tooltip_description` | string \| null  | no       | Tooltip description (available to scripts; not shown on the bar). |
+| `overlay_icon_handle` | string \| null  | no       | Overlay badge icon name, drawn on top of the main icon when resolvable. |
 
 Emit an empty array `[]` to clear the tray:
 

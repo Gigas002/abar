@@ -900,14 +900,25 @@ impl AppState {
                 .as_deref()
                 .or(i.title.as_deref())
                 .and_then(|name| self.icon_cache.get(name, size).map(|_| name.to_string()));
+            let overlay_name = i.overlay_icon_handle.as_deref().and_then(|name| {
+                let overlay_px = (size as f64 * 0.55).round().max(1.0) as u32;
+                self.icon_cache
+                    .get(name, overlay_px)
+                    .map(|_| name.to_string())
+            });
+            let fallback_label = i
+                .tooltip_title
+                .as_deref()
+                .or(i.title.as_deref())
+                .unwrap_or(&i.app_id);
             let mut seg = match icon_name {
-                Some(name) => Segment::icon_only(format!("tray:{}", i.app_id), name),
-                None => {
-                    // No resolvable icon: show title or app_id as text so the item is
-                    // still visible and clickable.
-                    let label = i.title.as_deref().unwrap_or(&i.app_id).to_string();
-                    Segment::new(format!("tray:{}", i.app_id), label)
+                Some(name) => {
+                    let mut seg = Segment::icon_only(format!("tray:{}", i.app_id), name);
+                    seg.label = fallback_label.to_string();
+                    seg.overlay_icon_name = overlay_name;
+                    seg
                 }
+                None => Segment::new(format!("tray:{}", i.app_id), fallback_label.to_string()),
             };
             let mut events = tray_events.clone();
             if tray_feed_id {
