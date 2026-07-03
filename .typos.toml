@@ -1,4 +1,5 @@
 [default.extend-words]
+ratatui = "ratatui"
 
 # Hex color strings (e.g. #c74dedFF) are not English words.
 [default]
