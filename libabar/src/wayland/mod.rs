@@ -92,6 +92,8 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         tray_events: crate::model::SegmentEvents::default(),
         #[cfg(feature = "tray")]
         tray_feed_id: false,
+        #[cfg(feature = "tray")]
+        tray_island: None,
     };
 
     // Spawn clock background task.
@@ -477,6 +479,11 @@ struct AppState {
     tray_events: crate::model::SegmentEvents,
     #[cfg(feature = "tray")]
     tray_feed_id: bool,
+    /// Cached (zone_idx, island_idx, tray_start) from the last successful tray
+    /// placement.  Preserved across empty-item updates so we can repopulate the
+    /// tray after trayd restarts without losing the slot position.
+    #[cfg(feature = "tray")]
+    tray_island: Option<(usize, usize, usize)>,
 }
 
 impl AppState {
@@ -924,6 +931,8 @@ impl AppState {
         }
 
         // Locate the island that holds the "tray" placeholder or existing "tray:*" segments.
+        // Fall back to the cached position from a previous update so the slot survives a
+        // clear (when items == [] removes all tray:* segments from the island).
         let pos = {
             let zones: [&Vec<crate::model::Island>; 3] = [
                 &self.spec.layout.left,
@@ -946,23 +955,36 @@ impl AppState {
             found
         };
 
-        let Some((zone_idx, island_idx)) = pos else {
+        // If the live search found the island, update the cache with the current tray_start
+        // so we know exactly where to splice on future updates (including after a clear).
+        // If not found, fall back to the cached slot — this happens after an empty-item
+        // update wiped all tray:* segments and trayd has now restarted with new items.
+        let (zone_idx, island_idx, tray_start) = if let Some((zi, ii)) = pos {
+            let zone = match zi {
+                0 => &self.spec.layout.left,
+                1 => &self.spec.layout.center,
+                _ => &self.spec.layout.right,
+            };
+            let ts = zone[ii]
+                .segments
+                .iter()
+                .position(|s| s.module_id == "tray" || s.module_id.starts_with("tray:"))
+                .unwrap_or(0);
+            self.tray_island = Some((zi, ii, ts));
+            (zi, ii, ts)
+        } else if let Some(cached) = self.tray_island {
+            cached
+        } else {
             return Ok(());
         };
 
+        // Splice the new segments into the island at the cached tray position.
         let zone = match zone_idx {
             0 => &mut self.spec.layout.left,
             1 => &mut self.spec.layout.center,
             _ => &mut self.spec.layout.right,
         };
         let island = &mut zone[island_idx];
-
-        // Find the contiguous span of existing tray segments and splice in the new ones.
-        let tray_start = island
-            .segments
-            .iter()
-            .position(|s| s.module_id == "tray" || s.module_id.starts_with("tray:"))
-            .unwrap_or(0);
         let tray_count = island
             .segments
             .iter()
