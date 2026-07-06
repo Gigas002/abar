@@ -7,6 +7,8 @@ pub struct MinimalTrayItem {
     pub title: Option<String>,
     pub status: TrayItemStatus,
     pub icon_handle: Option<String>,
+    #[serde(default)]
+    pub tooltip_title: Option<String>,
 }
 
 /// SNI item visibility status. `Passive` items are not rendered.

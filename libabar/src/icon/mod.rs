@@ -5,6 +5,19 @@ use cairo::ImageSurface;
 
 use crate::error::AbarError;
 
+/// Controls how icon name fallback works when the exact name isn't found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconLookupMode {
+    /// Strict FreeDesktop spec: try the exact name across all themes (primary → inherited
+    /// → hicolor) before stripping trailing `-` segments. Safe default.
+    #[default]
+    Exact,
+    /// Prefer the user's theme: try all name variants (stripped) in the primary theme
+    /// before falling back to inherited/hicolor themes. This gives visual consistency
+    /// at the cost of possibly losing semantic suffixes (e.g. `-mute-symbolic`).
+    PreferTheme,
+}
+
 /// Pixmap cache keyed by icon name; icons are scaled on first load.
 ///
 /// Not `Send` — keep on the main thread alongside the Wayland event loop.
@@ -12,6 +25,7 @@ pub struct IconCache {
     entries: HashMap<String, Option<ImageSurface>>,
     search_dirs: Vec<PathBuf>,
     theme_name: String,
+    mode: IconLookupMode,
 }
 
 impl IconCache {
@@ -21,6 +35,18 @@ impl IconCache {
             entries: HashMap::new(),
             search_dirs: default_search_dirs(),
             theme_name,
+            mode: IconLookupMode::default(),
+        }
+    }
+
+    /// Construct with a specific lookup mode.
+    pub fn with_mode(mode: IconLookupMode) -> Self {
+        let theme_name = std::env::var("XDG_ICON_THEME").unwrap_or_else(|_| "hicolor".to_string());
+        Self {
+            entries: HashMap::new(),
+            search_dirs: default_search_dirs(),
+            theme_name,
+            mode,
         }
     }
 
@@ -30,6 +56,21 @@ impl IconCache {
             entries: HashMap::new(),
             search_dirs,
             theme_name: theme_name.into(),
+            mode: IconLookupMode::default(),
+        }
+    }
+
+    /// Construct with explicit search directories and lookup mode (useful for tests).
+    pub fn with_dirs_and_mode(
+        search_dirs: Vec<PathBuf>,
+        theme_name: impl Into<String>,
+        mode: IconLookupMode,
+    ) -> Self {
+        Self {
+            entries: HashMap::new(),
+            search_dirs,
+            theme_name: theme_name.into(),
+            mode,
         }
     }
 
@@ -39,7 +80,7 @@ impl IconCache {
         if !self.entries.contains_key(name) {
             let dirs = self.search_dirs.clone();
             let theme = self.theme_name.clone();
-            let surface = resolve_icon(name, size, &dirs, &theme)
+            let surface = resolve_icon(name, size, &dirs, &theme, self.mode)
                 .and_then(|p| load_icon_file(&p, size).ok().flatten());
             self.entries.insert(name.to_string(), surface);
         }
@@ -55,26 +96,174 @@ impl Default for IconCache {
 
 /// Resolve a FreeDesktop icon name to a file path (PNG preferred, SVG with `svg` feature).
 ///
-/// Searches `search_dirs` for `theme_name` first, then `hicolor` as fallback, then
-/// `/usr/share/pixmaps`.
+/// Searches `search_dirs` for `theme_name` first, then inherited themes from `index.theme`,
+/// then `hicolor` as fallback, then `/usr/share/pixmaps`.
+///
+/// When `mode` is `PreferTheme`, trailing `-` segments are stripped per-theme so the user's
+/// preferred theme with a shorter name takes priority over a fallback theme's exact match.
+/// When `mode` is `Exact`, the full name is tried across all themes before stripping.
+///
+/// If `name` starts with `/` and the file exists (with `.png`/`.svg` extension or as-is),
+/// it is returned directly without any theme lookup.
 pub fn resolve_icon(
     name: &str,
-    _size: u32,
+    size: u32,
     search_dirs: &[PathBuf],
     theme_name: &str,
+    mode: IconLookupMode,
+) -> Option<PathBuf> {
+    // Absolute path: return directly if it exists.
+    if name.starts_with('/') {
+        let p = Path::new(name);
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+        let png = PathBuf::from(format!("{name}.png"));
+        if png.exists() {
+            return Some(png);
+        }
+        #[cfg(feature = "svg")]
+        {
+            let svg = PathBuf::from(format!("{name}.svg"));
+            if svg.exists() {
+                return Some(svg);
+            }
+        }
+        return None;
+    }
+
+    // Collect inherited themes once.
+    let mut inherited = Vec::new();
+    for base in search_dirs {
+        let theme_dir = base.join(theme_name);
+        if theme_dir.is_dir() {
+            inherited = parse_inherits(&theme_dir);
+            break;
+        }
+    }
+
+    match mode {
+        IconLookupMode::PreferTheme => {
+            // For each theme layer, try all name variants (stripped) before moving
+            // to the next theme. User's theme wins even with a shorter name.
+            if let Some(p) = resolve_with_stripping(name, size, search_dirs, theme_name) {
+                return Some(p);
+            }
+            for parent_theme in &inherited {
+                if parent_theme == "hicolor" {
+                    continue;
+                }
+                if let Some(p) = resolve_with_stripping(name, size, search_dirs, parent_theme) {
+                    return Some(p);
+                }
+            }
+            if theme_name != "hicolor"
+                && let Some(p) = resolve_with_stripping(name, size, search_dirs, "hicolor")
+            {
+                return Some(p);
+            }
+        }
+        IconLookupMode::Exact => {
+            // Strict FreeDesktop: try exact name across all themes first,
+            // then strip and repeat.
+            let mut candidate = name.to_string();
+            loop {
+                if let Some(p) = resolve_exact_across_themes(
+                    &candidate,
+                    size,
+                    search_dirs,
+                    theme_name,
+                    &inherited,
+                ) {
+                    return Some(p);
+                }
+                match candidate.rfind('-') {
+                    Some(pos) => candidate.truncate(pos),
+                    None => break,
+                }
+            }
+        }
+    }
+
+    // Last-resort pixmaps directory (exact name only).
+    find_in_dir(Path::new("/usr/share/pixmaps"), name)
+}
+
+/// Try the full icon name, then progressively strip trailing `-` segments,
+/// searching a single theme across all search directories.
+fn resolve_with_stripping(
+    name: &str,
+    size: u32,
+    search_dirs: &[PathBuf],
+    theme: &str,
+) -> Option<PathBuf> {
+    let mut candidate = name.to_string();
+    loop {
+        for base in search_dirs {
+            if let Some(p) = find_in_theme(base, theme, &candidate, size) {
+                return Some(p);
+            }
+        }
+        match candidate.rfind('-') {
+            Some(pos) => candidate.truncate(pos),
+            None => break,
+        }
+    }
+    None
+}
+
+/// Try a single icon name across primary → inherited → hicolor (no stripping).
+fn resolve_exact_across_themes(
+    name: &str,
+    size: u32,
+    search_dirs: &[PathBuf],
+    theme_name: &str,
+    inherited: &[String],
 ) -> Option<PathBuf> {
     for base in search_dirs {
-        if let Some(p) = find_in_theme(base, theme_name, name) {
-            return Some(p);
-        }
-        if theme_name != "hicolor"
-            && let Some(p) = find_in_theme(base, "hicolor", name)
-        {
+        if let Some(p) = find_in_theme(base, theme_name, name, size) {
             return Some(p);
         }
     }
-    // Last-resort pixmaps directory
-    find_in_dir(Path::new("/usr/share/pixmaps"), name)
+    for parent_theme in inherited {
+        if parent_theme == "hicolor" {
+            continue;
+        }
+        for base in search_dirs {
+            if let Some(p) = find_in_theme(base, parent_theme, name, size) {
+                return Some(p);
+            }
+        }
+    }
+    if theme_name != "hicolor" {
+        for base in search_dirs {
+            if let Some(p) = find_in_theme(base, "hicolor", name, size) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Parse the `Inherits=` line from `index.theme` in the given theme directory.
+/// Returns the comma-separated theme names, or an empty vec if not found.
+pub fn parse_inherits(theme_dir: &Path) -> Vec<String> {
+    let index_path = theme_dir.join("index.theme");
+    let content = match std::fs::read_to_string(&index_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Inherits=") {
+            return value
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 /// Returns XDG icon search directories in priority order.
@@ -191,33 +380,202 @@ fn load_icon_file(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarEr
     }
 }
 
-fn find_in_theme(base: &Path, theme: &str, name: &str) -> Option<PathBuf> {
+/// Metadata for a directory entry declared in `index.theme`.
+struct ThemeDir {
+    path: PathBuf,
+    size: u32,
+    is_scalable: bool,
+}
+
+fn find_in_theme(base: &Path, theme: &str, name: &str, size: u32) -> Option<PathBuf> {
     let theme_dir = base.join(theme);
     if !theme_dir.is_dir() {
         return None;
     }
-    // Walk size dirs (e.g. 48x48, scalable) then category subdirs (apps/, status/, …).
-    let size_entries = std::fs::read_dir(&theme_dir).ok()?;
-    for size_entry in size_entries.flatten() {
-        let size_dir = size_entry.path();
-        if !size_dir.is_dir() {
+
+    // Try index.theme–driven lookup first (handles themes like candy-icons that use
+    // non-standard layouts such as `apps/scalable/` instead of `scalable/apps/`).
+    if let Some(p) = find_in_theme_indexed(&theme_dir, name, size) {
+        return Some(p);
+    }
+
+    // Fallback: heuristic walk for themes without a usable index.theme.
+    find_in_theme_heuristic(&theme_dir, name, size)
+}
+
+/// Parse `index.theme` and search the declared `Directories=` paths, sorted by size fit.
+fn find_in_theme_indexed(theme_dir: &Path, name: &str, size: u32) -> Option<PathBuf> {
+    let index_path = theme_dir.join("index.theme");
+    let content = std::fs::read_to_string(&index_path).ok()?;
+
+    // Parse Directories= line.
+    let directories_line = content.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed.strip_prefix("Directories=")
+    })?;
+
+    let dir_names: Vec<&str> = directories_line
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if dir_names.is_empty() {
+        return None;
+    }
+
+    // Parse per-directory metadata from their [section] blocks.
+    let mut theme_dirs: Vec<ThemeDir> = Vec::new();
+    for dir_name in &dir_names {
+        let section_header = format!("[{dir_name}]");
+        let dir_meta = parse_dir_section(&content, &section_header);
+        let path = theme_dir.join(dir_name);
+        if !path.is_dir() {
             continue;
         }
-        if let Some(p) = find_in_dir(&size_dir, name) {
+        theme_dirs.push(ThemeDir {
+            path,
+            size: dir_meta.0,
+            is_scalable: dir_meta.1,
+        });
+    }
+
+    // Sort by fitness for the requested size.
+    sort_theme_dirs(&mut theme_dirs, size);
+
+    // Search each directory.
+    for td in &theme_dirs {
+        // Skip scalable dirs when svg feature is disabled.
+        #[cfg(not(feature = "svg"))]
+        if td.is_scalable && td.size == 0 {
+            continue;
+        }
+        if let Some(p) = find_in_dir(&td.path, name) {
             return Some(p);
         }
-        let Ok(cat_entries) = std::fs::read_dir(&size_dir) else {
+    }
+    None
+}
+
+/// Parse a directory's `[section]` block for `Size=` and `Type=` values.
+/// Returns (size, is_scalable). Defaults to (0, false) if not found.
+fn parse_dir_section(content: &str, section_header: &str) -> (u32, bool) {
+    let mut in_section = false;
+    let mut size = 0u32;
+    let mut is_scalable = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == section_header {
+            in_section = true;
+            continue;
+        }
+        if in_section {
+            if trimmed.starts_with('[') {
+                break; // next section
+            }
+            if let Some(val) = trimmed.strip_prefix("Size=") {
+                size = val.trim().parse().unwrap_or(0);
+            } else if let Some(val) = trimmed.strip_prefix("Type=") {
+                is_scalable = val.trim().eq_ignore_ascii_case("Scalable");
+            }
+        }
+    }
+    (size, is_scalable)
+}
+
+/// Sort directories by fitness: exact size → scalable → larger (less overshoot) → smaller.
+fn sort_theme_dirs(dirs: &mut [ThemeDir], requested: u32) {
+    dirs.sort_by(|a, b| {
+        fn key(td: &ThemeDir, req: u32) -> (u8, u32) {
+            if td.size == req {
+                (0, 0)
+            } else if td.is_scalable {
+                (1, 0)
+            } else if td.size == 0 {
+                (4, u32::MAX)
+            } else if td.size > req {
+                (2, td.size - req)
+            } else {
+                (3, req - td.size)
+            }
+        }
+        key(a, requested).cmp(&key(b, requested))
+    });
+}
+
+/// Heuristic fallback for themes without `index.theme` or without `Directories=`.
+/// Walks `<theme_dir>/<top>/<sub>/` two levels deep, guessing sizes from directory names.
+fn find_in_theme_heuristic(theme_dir: &Path, name: &str, size: u32) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(theme_dir).ok()?;
+    let mut dirs: Vec<(PathBuf, u32)> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name();
+        let dir_name_str = dir_name.to_string_lossy();
+        let parsed = parse_dir_size(&dir_name_str).unwrap_or(0);
+        dirs.push((path, parsed));
+    }
+
+    // Sort by closeness to requested size.
+    dirs.sort_by(|a, b| {
+        fn key(dir_size: u32, req: u32) -> (u8, u32) {
+            if dir_size == req {
+                (0, 0)
+            } else if dir_size == u32::MAX {
+                (1, 0)
+            } else if dir_size == 0 {
+                (4, u32::MAX)
+            } else if dir_size > req {
+                (2, dir_size - req)
+            } else {
+                (3, req - dir_size)
+            }
+        }
+        key(a.1, size).cmp(&key(b.1, size))
+    });
+
+    for (dir, _) in &dirs {
+        if let Some(p) = find_in_dir(dir, name) {
+            return Some(p);
+        }
+        let Ok(sub_entries) = std::fs::read_dir(dir) else {
             continue;
         };
-        for cat_entry in cat_entries.flatten() {
-            let cat_dir = cat_entry.path();
-            if !cat_dir.is_dir() {
+        for sub_entry in sub_entries.flatten() {
+            let sub_dir = sub_entry.path();
+            if !sub_dir.is_dir() {
                 continue;
             }
-            if let Some(p) = find_in_dir(&cat_dir, name) {
+            if let Some(p) = find_in_dir(&sub_dir, name) {
                 return Some(p);
             }
         }
+    }
+    None
+}
+
+/// Parse the numeric size from a directory name like "48x48", "32x32", or "scalable".
+fn parse_dir_size(dir_name: &str) -> Option<u32> {
+    if dir_name == "scalable" {
+        #[cfg(feature = "svg")]
+        {
+            return Some(u32::MAX);
+        }
+        #[cfg(not(feature = "svg"))]
+        {
+            return None;
+        }
+    }
+    let parts: Vec<&str> = dir_name.split('x').collect();
+    if parts.len() == 2
+        && let Ok(w) = parts[0].parse::<u32>()
+    {
+        return Some(w);
     }
     None
 }

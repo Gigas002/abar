@@ -31,6 +31,12 @@ impl Settings {
         let theme_base = theme.base.clone().unwrap_or_default();
         let config_base = config.base.clone().unwrap_or_default();
 
+        let icon_prefer_theme = config
+            .icons
+            .as_ref()
+            .and_then(|i| i.prefer.as_deref())
+            .is_some_and(|v| v.eq_ignore_ascii_case("theme"));
+
         let background = theme_base
             .background_color
             .unwrap_or_else(|| ThemeBase::default().background_color.unwrap());
@@ -87,6 +93,7 @@ impl Settings {
                     island_padding_x,
                     island_padding_y,
                     island_radius,
+                    icon_prefer_theme,
                     ..defaults
                 },
                 layout,
@@ -298,6 +305,7 @@ pub(crate) fn apply_icon_fallbacks_with_dirs(
     search_dirs: &[std::path::PathBuf],
     theme_name: &str,
 ) {
+    use libabar::IconLookupMode;
     let size = font_size.round() as u32;
 
     for island in layout
@@ -313,7 +321,15 @@ pub(crate) fn apply_icon_fallbacks_with_dirs(
             let Some(icon_name) = &seg.icon_name else {
                 continue;
             };
-            if resolve_icon(icon_name, size, search_dirs, theme_name).is_none() {
+            if resolve_icon(
+                icon_name,
+                size,
+                search_dirs,
+                theme_name,
+                IconLookupMode::Exact,
+            )
+            .is_none()
+            {
                 tracing::warn!(
                     module = %seg.module_id,
                     icon = %icon_name,

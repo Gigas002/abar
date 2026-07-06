@@ -20,6 +20,7 @@ fn test_spec(layout: BarLayout) -> BarSpec {
             island_radius: 8.0,
             island_gap: 8.0,
             segment_gap: 6.0,
+            icon_prefer_theme: false,
         },
         layout,
     )

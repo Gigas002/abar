@@ -5,6 +5,16 @@ font_size = 16
 # themes are looked-up at ~/.config/abar/themes, e.g. theme.toml in this directory
 theme = "theme.toml"
 
+# Icon lookup configuration.
+[icons]
+# "exact" (default) = strict FreeDesktop spec: try the exact icon name across all themes
+#   before stripping trailing `-` segments. Preserves semantic suffixes like `-mute-symbolic`.
+# "theme" = prefer user's icon theme: strip suffixes per-theme so a themed icon
+#   (e.g. candy-icons "org.telegram.desktop") wins over hicolor's exact
+#   "org.telegram.desktop-mute-symbolic". Better visual consistency at the cost of
+#   possibly losing status semantics.
+prefer = "theme"
+
 # Modules:
 # All modules are an opt-in cargo compile-time features.
 # Built-in modules can have pre-defined settings, which can be tweaked in the config.

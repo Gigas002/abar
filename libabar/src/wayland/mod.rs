@@ -56,6 +56,12 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
 
     display.get_registry(&qh, ());
 
+    let icon_mode = if spec.style.icon_prefer_theme {
+        crate::icon::IconLookupMode::PreferTheme
+    } else {
+        crate::icon::IconLookupMode::Exact
+    };
+
     let mut state = AppState {
         running: true,
         spec,
@@ -75,7 +81,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         pointer: PointerState::default(),
         keyboard: None,
         submenu: None,
-        icon_cache: IconCache::new(),
+        icon_cache: IconCache::with_mode(icon_mode),
         font: None,
         updates_tx: updates_tx.clone(),
         updates_rx,
@@ -894,25 +900,43 @@ impl AppState {
         use crate::modules::tray::ipc::TrayItemStatus;
 
         // Build one segment per visible item.
-        // Icon resolution order: icon_handle → title (as FreeDesktop name) → text fallback.
+        // Icon resolution order: icon_handle → tooltip_title (lowercased) → title (lowercased) → text fallback.
         // Events from config; when feed_id is set, each configured on_* command gets ` <app_id>` appended.
         let size = self.spec.style.font_size.round() as u32;
         let tray_feed_id = self.tray_feed_id;
         let tray_events = self.tray_events.clone();
         let mut new_segs: Vec<Segment> = Vec::new();
         for i in items.iter().filter(|i| i.status != TrayItemStatus::Passive) {
-            // Prefer icon_handle; fall back to title as a FreeDesktop icon name.
+            // Prefer icon_handle; then try tooltip_title/title lowercased as icon names.
             let icon_name = i
                 .icon_handle
                 .as_deref()
-                .or(i.title.as_deref())
-                .and_then(|name| self.icon_cache.get(name, size).map(|_| name.to_string()));
+                .and_then(|name| self.icon_cache.get(name, size).map(|_| name.to_string()))
+                .or_else(|| {
+                    // Try tooltip_title lowercased as a FreeDesktop icon name
+                    // (e.g. "Discord" → "discord" which exists in many icon themes).
+                    i.tooltip_title
+                        .as_deref()
+                        .map(|t| t.to_lowercase())
+                        .and_then(|name| self.icon_cache.get(&name, size).map(|_| name))
+                })
+                .or_else(|| {
+                    // Try title lowercased as a FreeDesktop icon name.
+                    i.title
+                        .as_deref()
+                        .map(|t| t.to_lowercase())
+                        .and_then(|name| self.icon_cache.get(&name, size).map(|_| name))
+                });
             let mut seg = match icon_name {
                 Some(name) => Segment::icon_only(format!("tray:{}", i.app_id), name),
                 None => {
-                    // No resolvable icon: show title or app_id as text so the item is
-                    // still visible and clickable.
-                    let label = i.title.as_deref().unwrap_or(&i.app_id).to_string();
+                    // No resolvable icon: show tooltip_title/title/app_id as text.
+                    let label = i
+                        .tooltip_title
+                        .as_deref()
+                        .or(i.title.as_deref())
+                        .unwrap_or(&i.app_id)
+                        .to_string();
                     Segment::new(format!("tray:{}", i.app_id), label)
                 }
             };
