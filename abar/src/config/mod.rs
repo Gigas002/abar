@@ -21,6 +21,7 @@ pub use modules::{Clock, Keyboard, Modules, Mpris, Tray, Window, Workspaces};
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub base: Option<Base>,
+    pub icons: Option<Icons>,
     pub layout: Option<Layout>,
     pub modules: Option<Modules>,
     pub keyboard: Option<Keyboard>,
@@ -38,6 +39,15 @@ pub struct Base {
     pub theme: Option<String>,
 }
 
+/// Icon lookup configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Icons {
+    /// `"theme"` = prefer user's icon theme (strip suffixes per-theme).
+    /// `"exact"` = strict FreeDesktop spec (default).
+    #[serde(default)]
+    pub prefer: Option<String>,
+}
+
 impl Default for Base {
     fn default() -> Self {
         Self {
@@ -52,6 +62,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             base: Some(Base::default()),
+            icons: None,
             layout: Some(Layout::default()),
             modules: Some(Modules::default()),
             keyboard: None,

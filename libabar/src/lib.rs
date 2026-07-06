@@ -13,7 +13,7 @@ pub mod wayland;
 
 pub use color::{ParseHexRgbaError, parse_hex_rgba, parse_hex_rgba_to_bgra, rgba_to_bgra};
 pub use error::AbarError;
-pub use icon::{IconCache, default_search_dirs, resolve_icon};
+pub use icon::{IconCache, IconLookupMode, default_search_dirs, resolve_icon};
 pub use input::PointerAction;
 pub use model::{
     BarColors, BarLayout, BarSpec, BarStyle, DisplayMode, Island, Segment, SegmentEvents,

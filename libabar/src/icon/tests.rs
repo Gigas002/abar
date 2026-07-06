@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{IconCache, load_png, resolve_icon};
+use super::{IconCache, IconLookupMode, load_png, resolve_icon};
 
 fn fixture_theme_dir() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -27,14 +27,20 @@ fn write_test_png(path: &std::path::Path, size: i32) {
 #[test]
 fn resolve_finds_icon_in_hicolor() {
     let (_dir, base) = fixture_theme_dir();
-    let result = resolve_icon("test-icon", 48, &[base], "hicolor");
+    let result = resolve_icon("test-icon", 48, &[base], "hicolor", IconLookupMode::Exact);
     assert!(result.is_some(), "expected to resolve test-icon");
 }
 
 #[test]
 fn resolve_returns_none_for_missing_icon() {
     let (_dir, base) = fixture_theme_dir();
-    let result = resolve_icon("nonexistent-icon", 48, &[base], "hicolor");
+    let result = resolve_icon(
+        "nonexistent-icon",
+        48,
+        &[base],
+        "hicolor",
+        IconLookupMode::Exact,
+    );
     assert!(result.is_none());
 }
 
@@ -42,7 +48,7 @@ fn resolve_returns_none_for_missing_icon() {
 fn resolve_falls_back_to_hicolor_from_other_theme() {
     let (_dir, base) = fixture_theme_dir();
     // Request with a different theme name; should still find via hicolor fallback
-    let result = resolve_icon("test-icon", 48, &[base], "Papirus");
+    let result = resolve_icon("test-icon", 48, &[base], "Papirus", IconLookupMode::Exact);
     assert!(result.is_some(), "should fall back to hicolor");
 }
 
@@ -96,7 +102,7 @@ fn resolve_finds_icon_in_category_first_theme() {
     let index_content = "[Icon Theme]\nName=mytheme\nDirectories=apps/scalable\n\n[apps/scalable]\nSize=96\nType=Scalable\nMinSize=8\nMaxSize=512\n";
     std::fs::write(base.join("mytheme").join("index.theme"), index_content).unwrap();
 
-    let result = resolve_icon("discord", 24, &[base], "mytheme");
+    let result = resolve_icon("discord", 24, &[base], "mytheme", IconLookupMode::Exact);
     assert!(
         result.is_some(),
         "should find discord icon via index.theme Directories"
@@ -122,16 +128,15 @@ fn resolve_follows_inherits_from_index_theme() {
         "[Icon Theme]\nName=child-theme\nInherits=parent-theme,hicolor\nDirectories=\n";
     std::fs::write(child_dir.join("index.theme"), index_content).unwrap();
 
-    let result = resolve_icon("myapp", 48, &[base], "child-theme");
+    let result = resolve_icon("myapp", 48, &[base], "child-theme", IconLookupMode::Exact);
     assert!(
         result.is_some(),
         "should find icon via inherited parent-theme"
     );
 }
 
-/// Test that trailing `-` segments are stripped to find a shorter icon name
-/// (FreeDesktop icon naming fallback, e.g. telegram's "org.telegram.desktop-mute-symbolic"
-/// resolves to "org.telegram.desktop" when the full name doesn't exist).
+/// Test that trailing `-` segments are stripped to find a shorter icon name.
+/// Uses PreferTheme mode which strips per-theme.
 #[test]
 fn resolve_strips_trailing_hyphen_segments() {
     let dir = tempfile::tempdir().unwrap();
@@ -145,9 +150,14 @@ fn resolve_strips_trailing_hyphen_segments() {
     let index_content = "[Icon Theme]\nName=mytheme\nDirectories=apps/scalable\n\n[apps/scalable]\nSize=96\nType=Scalable\n";
     std::fs::write(base.join("mytheme").join("index.theme"), index_content).unwrap();
 
-    // Request the full name with suffixes — should strip "-mute-symbolic" then "-mute"
-    // and find "org.telegram.desktop".
-    let result = resolve_icon("org.telegram.desktop-mute-symbolic", 24, &[base], "mytheme");
+    // PreferTheme mode: strips per-theme.
+    let result = resolve_icon(
+        "org.telegram.desktop-mute-symbolic",
+        24,
+        &[base],
+        "mytheme",
+        IconLookupMode::PreferTheme,
+    );
     assert!(
         result.is_some(),
         "should find icon after stripping -mute-symbolic"
@@ -158,9 +168,8 @@ fn resolve_strips_trailing_hyphen_segments() {
     );
 }
 
-/// Test that the primary theme with a stripped name takes priority over hicolor's exact match.
-/// This is the Telegram case: hicolor has "org.telegram.desktop-mute-symbolic.svg" (exact)
-/// but candy-icons has "org.telegram.desktop.svg" (stripped) — the user's theme should win.
+/// Test that the primary theme with a stripped name takes priority over hicolor's exact match
+/// when using PreferTheme mode.
 #[test]
 fn resolve_prefers_primary_theme_stripped_over_hicolor_exact() {
     let dir = tempfile::tempdir().unwrap();
@@ -181,13 +190,35 @@ fn resolve_prefers_primary_theme_stripped_over_hicolor_exact() {
         16,
     );
 
-    let result = resolve_icon("org.telegram.desktop-mute-symbolic", 24, &[base], "mytheme");
+    // PreferTheme: primary theme's stripped match wins over hicolor exact.
+    let result = resolve_icon(
+        "org.telegram.desktop-mute-symbolic",
+        24,
+        &[base.clone()],
+        "mytheme",
+        IconLookupMode::PreferTheme,
+    );
     assert!(result.is_some());
     let path = result.unwrap();
-    // Should pick the primary theme's stripped match, NOT hicolor's exact.
     assert!(
         path.to_string_lossy().contains("mytheme"),
-        "expected primary theme icon, got: {}",
+        "PreferTheme: expected primary theme icon, got: {}",
+        path.display()
+    );
+
+    // Exact mode: hicolor's exact match wins.
+    let result = resolve_icon(
+        "org.telegram.desktop-mute-symbolic",
+        24,
+        &[base],
+        "mytheme",
+        IconLookupMode::Exact,
+    );
+    assert!(result.is_some());
+    let path = result.unwrap();
+    assert!(
+        path.to_string_lossy().contains("hicolor"),
+        "Exact: expected hicolor icon, got: {}",
         path.display()
     );
 }
@@ -196,7 +227,7 @@ fn resolve_prefers_primary_theme_stripped_over_hicolor_exact() {
 mod svg_tests {
     use std::path::PathBuf;
 
-    use super::super::{IconCache, load_svg, resolve_icon};
+    use super::super::{IconCache, IconLookupMode, load_svg, resolve_icon};
 
     fn fixture_svg_theme_dir() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -215,7 +246,13 @@ mod svg_tests {
     #[test]
     fn resolve_finds_svg_icon() {
         let (_dir, base) = fixture_svg_theme_dir();
-        let result = resolve_icon("test-svg-icon", 24, &[base], "hicolor");
+        let result = resolve_icon(
+            "test-svg-icon",
+            24,
+            &[base],
+            "hicolor",
+            IconLookupMode::Exact,
+        );
         assert!(result.is_some());
         assert_eq!(result.unwrap().extension().unwrap(), "svg");
     }

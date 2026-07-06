@@ -5,6 +5,19 @@ use cairo::ImageSurface;
 
 use crate::error::AbarError;
 
+/// Controls how icon name fallback works when the exact name isn't found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconLookupMode {
+    /// Strict FreeDesktop spec: try the exact name across all themes (primary → inherited
+    /// → hicolor) before stripping trailing `-` segments. Safe default.
+    #[default]
+    Exact,
+    /// Prefer the user's theme: try all name variants (stripped) in the primary theme
+    /// before falling back to inherited/hicolor themes. This gives visual consistency
+    /// at the cost of possibly losing semantic suffixes (e.g. `-mute-symbolic`).
+    PreferTheme,
+}
+
 /// Pixmap cache keyed by icon name; icons are scaled on first load.
 ///
 /// Not `Send` — keep on the main thread alongside the Wayland event loop.
@@ -12,6 +25,7 @@ pub struct IconCache {
     entries: HashMap<String, Option<ImageSurface>>,
     search_dirs: Vec<PathBuf>,
     theme_name: String,
+    mode: IconLookupMode,
 }
 
 impl IconCache {
@@ -21,6 +35,18 @@ impl IconCache {
             entries: HashMap::new(),
             search_dirs: default_search_dirs(),
             theme_name,
+            mode: IconLookupMode::default(),
+        }
+    }
+
+    /// Construct with a specific lookup mode.
+    pub fn with_mode(mode: IconLookupMode) -> Self {
+        let theme_name = std::env::var("XDG_ICON_THEME").unwrap_or_else(|_| "hicolor".to_string());
+        Self {
+            entries: HashMap::new(),
+            search_dirs: default_search_dirs(),
+            theme_name,
+            mode,
         }
     }
 
@@ -30,6 +56,21 @@ impl IconCache {
             entries: HashMap::new(),
             search_dirs,
             theme_name: theme_name.into(),
+            mode: IconLookupMode::default(),
+        }
+    }
+
+    /// Construct with explicit search directories and lookup mode (useful for tests).
+    pub fn with_dirs_and_mode(
+        search_dirs: Vec<PathBuf>,
+        theme_name: impl Into<String>,
+        mode: IconLookupMode,
+    ) -> Self {
+        Self {
+            entries: HashMap::new(),
+            search_dirs,
+            theme_name: theme_name.into(),
+            mode,
         }
     }
 
@@ -39,7 +80,7 @@ impl IconCache {
         if !self.entries.contains_key(name) {
             let dirs = self.search_dirs.clone();
             let theme = self.theme_name.clone();
-            let surface = resolve_icon(name, size, &dirs, &theme)
+            let surface = resolve_icon(name, size, &dirs, &theme, self.mode)
                 .and_then(|p| load_icon_file(&p, size).ok().flatten());
             self.entries.insert(name.to_string(), surface);
         }
@@ -58,10 +99,9 @@ impl Default for IconCache {
 /// Searches `search_dirs` for `theme_name` first, then inherited themes from `index.theme`,
 /// then `hicolor` as fallback, then `/usr/share/pixmaps`.
 ///
-/// Per the FreeDesktop icon naming spec, if the exact name is not found, trailing `-`
-/// segments are stripped progressively (e.g. `app-status-symbolic` → `app-status` → `app`).
-/// Stripping is done per-theme so that the user's preferred theme with a shorter name
-/// takes priority over a fallback theme with an exact match.
+/// When `mode` is `PreferTheme`, trailing `-` segments are stripped per-theme so the user's
+/// preferred theme with a shorter name takes priority over a fallback theme's exact match.
+/// When `mode` is `Exact`, the full name is tried across all themes before stripping.
 ///
 /// If `name` starts with `/` and the file exists (with `.png`/`.svg` extension or as-is),
 /// it is returned directly without any theme lookup.
@@ -70,6 +110,7 @@ pub fn resolve_icon(
     size: u32,
     search_dirs: &[PathBuf],
     theme_name: &str,
+    mode: IconLookupMode,
 ) -> Option<PathBuf> {
     // Absolute path: return directly if it exists.
     if name.starts_with('/') {
@@ -101,30 +142,46 @@ pub fn resolve_icon(
         }
     }
 
-    // Strategy: for each theme layer (primary → inherited → hicolor),
-    // try the full name then progressively strip trailing `-` segments.
-    // This ensures the user's preferred theme wins even with a shorter name
-    // over a fallback theme's exact match.
-
-    // 1. Primary theme with all name variants.
-    if let Some(p) = resolve_with_stripping(name, size, search_dirs, theme_name) {
-        return Some(p);
-    }
-
-    // 2. Inherited themes with all name variants.
-    for parent_theme in &inherited {
-        if parent_theme == "hicolor" {
-            continue;
+    match mode {
+        IconLookupMode::PreferTheme => {
+            // For each theme layer, try all name variants (stripped) before moving
+            // to the next theme. User's theme wins even with a shorter name.
+            if let Some(p) = resolve_with_stripping(name, size, search_dirs, theme_name) {
+                return Some(p);
+            }
+            for parent_theme in &inherited {
+                if parent_theme == "hicolor" {
+                    continue;
+                }
+                if let Some(p) = resolve_with_stripping(name, size, search_dirs, parent_theme) {
+                    return Some(p);
+                }
+            }
+            if theme_name != "hicolor" {
+                if let Some(p) = resolve_with_stripping(name, size, search_dirs, "hicolor") {
+                    return Some(p);
+                }
+            }
         }
-        if let Some(p) = resolve_with_stripping(name, size, search_dirs, parent_theme) {
-            return Some(p);
-        }
-    }
-
-    // 3. hicolor fallback with all name variants.
-    if theme_name != "hicolor" {
-        if let Some(p) = resolve_with_stripping(name, size, search_dirs, "hicolor") {
-            return Some(p);
+        IconLookupMode::Exact => {
+            // Strict FreeDesktop: try exact name across all themes first,
+            // then strip and repeat.
+            let mut candidate = name.to_string();
+            loop {
+                if let Some(p) = resolve_exact_across_themes(
+                    &candidate,
+                    size,
+                    search_dirs,
+                    theme_name,
+                    &inherited,
+                ) {
+                    return Some(p);
+                }
+                match candidate.rfind('-') {
+                    Some(pos) => candidate.truncate(pos),
+                    None => break,
+                }
+            }
         }
     }
 
@@ -150,6 +207,39 @@ fn resolve_with_stripping(
         match candidate.rfind('-') {
             Some(pos) => candidate.truncate(pos),
             None => break,
+        }
+    }
+    None
+}
+
+/// Try a single icon name across primary → inherited → hicolor (no stripping).
+fn resolve_exact_across_themes(
+    name: &str,
+    size: u32,
+    search_dirs: &[PathBuf],
+    theme_name: &str,
+    inherited: &[String],
+) -> Option<PathBuf> {
+    for base in search_dirs {
+        if let Some(p) = find_in_theme(base, theme_name, name, size) {
+            return Some(p);
+        }
+    }
+    for parent_theme in inherited {
+        if parent_theme == "hicolor" {
+            continue;
+        }
+        for base in search_dirs {
+            if let Some(p) = find_in_theme(base, parent_theme, name, size) {
+                return Some(p);
+            }
+        }
+    }
+    if theme_name != "hicolor" {
+        for base in search_dirs {
+            if let Some(p) = find_in_theme(base, "hicolor", name, size) {
+                return Some(p);
+            }
         }
     }
     None

@@ -133,6 +133,10 @@ pub struct BarStyle {
     pub island_radius: f64,
     pub island_gap: f64,
     pub segment_gap: f64,
+    /// When `true`, prefer the user's icon theme even if it requires stripping
+    /// trailing `-` segments from icon names (e.g. `-mute-symbolic`). When `false`
+    /// (default), follow strict FreeDesktop spec ordering.
+    pub icon_prefer_theme: bool,
 }
 
 impl Default for BarStyle {
@@ -147,6 +151,7 @@ impl Default for BarStyle {
             island_radius: 12.0,
             island_gap: 8.0,
             segment_gap: 8.0,
+            icon_prefer_theme: false,
         }
     }
 }

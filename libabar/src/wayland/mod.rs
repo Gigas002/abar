@@ -56,6 +56,12 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
 
     display.get_registry(&qh, ());
 
+    let icon_mode = if spec.style.icon_prefer_theme {
+        crate::icon::IconLookupMode::PreferTheme
+    } else {
+        crate::icon::IconLookupMode::Exact
+    };
+
     let mut state = AppState {
         running: true,
         spec,
@@ -75,7 +81,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         pointer: PointerState::default(),
         keyboard: None,
         submenu: None,
-        icon_cache: IconCache::new(),
+        icon_cache: IconCache::with_mode(icon_mode),
         font: None,
         updates_tx: updates_tx.clone(),
         updates_rx,
