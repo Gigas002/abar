@@ -194,7 +194,7 @@ fn resolve_prefers_primary_theme_stripped_over_hicolor_exact() {
     let result = resolve_icon(
         "org.telegram.desktop-mute-symbolic",
         24,
-        &[base.clone()],
+        std::slice::from_ref(&base),
         "mytheme",
         IconLookupMode::PreferTheme,
     );
