@@ -157,10 +157,10 @@ pub fn resolve_icon(
                     return Some(p);
                 }
             }
-            if theme_name != "hicolor" {
-                if let Some(p) = resolve_with_stripping(name, size, search_dirs, "hicolor") {
-                    return Some(p);
-                }
+            if theme_name != "hicolor"
+                && let Some(p) = resolve_with_stripping(name, size, search_dirs, "hicolor")
+            {
+                return Some(p);
             }
         }
         IconLookupMode::Exact => {
@@ -485,7 +485,7 @@ fn parse_dir_section(content: &str, section_header: &str) -> (u32, bool) {
 }
 
 /// Sort directories by fitness: exact size → scalable → larger (less overshoot) → smaller.
-fn sort_theme_dirs(dirs: &mut Vec<ThemeDir>, requested: u32) {
+fn sort_theme_dirs(dirs: &mut [ThemeDir], requested: u32) {
     dirs.sort_by(|a, b| {
         fn key(td: &ThemeDir, req: u32) -> (u8, u32) {
             if td.size == req {
@@ -572,10 +572,10 @@ fn parse_dir_size(dir_name: &str) -> Option<u32> {
         }
     }
     let parts: Vec<&str> = dir_name.split('x').collect();
-    if parts.len() == 2 {
-        if let Ok(w) = parts[0].parse::<u32>() {
-            return Some(w);
-        }
+    if parts.len() == 2
+        && let Ok(w) = parts[0].parse::<u32>()
+    {
+        return Some(w);
     }
     None
 }
