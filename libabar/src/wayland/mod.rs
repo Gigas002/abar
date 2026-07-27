@@ -12,7 +12,8 @@ use rustix::event::{PollFd, PollFlags, poll};
 use tracing::{debug, warn};
 use wayland_client::protocol::wl_pointer::{Axis, ButtonState};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols_wlr::layer_shell::v1::client::{
@@ -69,15 +70,8 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         shm: None,
         layer_shell: None,
         seat: None,
-        surface: None,
-        layer_surface: None,
-        pending_configure: None,
-        buffer: None,
-        pool: None,
-        pool_file: None,
-        bar_width: 1,
-        bar_height: 1,
-        computed: None,
+        outputs: Vec::new(),
+        bars: Vec::new(),
         pointer: PointerState::default(),
         keyboard: None,
         submenu: None,
@@ -418,7 +412,8 @@ async fn clock_task(
 #[derive(Default)]
 struct PointerState {
     pointer: Option<wl_pointer::WlPointer>,
-    on_surface: bool,
+    /// Output (registry) name of the bar surface the pointer is currently over, if any.
+    active_bar_output: Option<u32>,
     x: f64,
     y: f64,
     // Set when an Axis event fires; cleared on Frame. Prevents the paired
@@ -448,15 +443,21 @@ struct SubmenuState {
     height: u32,
 }
 
-struct AppState {
-    running: bool,
-    spec: BarSpec,
-    compositor: Option<wl_compositor::WlCompositor>,
-    shm: Option<wl_shm::WlShm>,
-    layer_shell: Option<ZwlrLayerShellV1>,
-    seat: Option<wl_seat::WlSeat>,
-    surface: Option<wl_surface::WlSurface>,
-    layer_surface: Option<ZwlrLayerSurfaceV1>,
+/// A bound Wayland output, tracked so a bar can be created/destroyed for it.
+struct OutputInfo {
+    /// Registry global name; used to correlate `GlobalRemove` events and to
+    /// tie a `Bar` back to the output it was created for.
+    name: u32,
+    output: wl_output::WlOutput,
+}
+
+/// Per-output bar surface state. One `Bar` is created for each connected
+/// output so abar shows on every monitor instead of just one.
+struct Bar {
+    /// Registry global name of the `wl_output` this bar is anchored to.
+    output_name: u32,
+    surface: wl_surface::WlSurface,
+    layer_surface: ZwlrLayerSurfaceV1,
     pending_configure: Option<(u32, u32, u32)>,
     buffer: Option<wl_buffer::WlBuffer>,
     pool: Option<wl_shm_pool::WlShmPool>,
@@ -464,6 +465,19 @@ struct AppState {
     bar_width: u32,
     bar_height: u32,
     computed: Option<ComputedBar>,
+}
+
+struct AppState {
+    running: bool,
+    spec: BarSpec,
+    compositor: Option<wl_compositor::WlCompositor>,
+    shm: Option<wl_shm::WlShm>,
+    layer_shell: Option<ZwlrLayerShellV1>,
+    seat: Option<wl_seat::WlSeat>,
+    /// Every currently bound output; used to spin up a `Bar` per monitor.
+    outputs: Vec<OutputInfo>,
+    /// One bar per connected output.
+    bars: Vec<Bar>,
     pointer: PointerState,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     submenu: Option<SubmenuState>,
@@ -493,31 +507,88 @@ struct AppState {
 }
 
 impl AppState {
-    fn try_init_layer_shell(&mut self, qh: &QueueHandle<Self>) {
-        if self.layer_surface.is_some() {
+    /// Create a `Bar` for every known output that doesn't already have one.
+    /// No-op until the compositor and layer-shell globals are both bound.
+    fn create_bars_for_new_outputs(&mut self, qh: &QueueHandle<Self>) {
+        let Some(compositor) = self.compositor.clone() else {
             return;
+        };
+        let Some(layer_shell) = self.layer_shell.clone() else {
+            return;
+        };
+
+        // Reuse a previously-painted height as the initial exclusive zone so a
+        // newly hotplugged monitor doesn't briefly show a 1px-tall bar.
+        let initial_height = self
+            .bars
+            .iter()
+            .find_map(|b| b.computed.as_ref().map(|_| b.bar_height))
+            .unwrap_or(1);
+
+        let output_names: Vec<u32> = self.outputs.iter().map(|o| o.name).collect();
+        for name in output_names {
+            if self.bars.iter().any(|b| b.output_name == name) {
+                continue;
+            }
+            let Some(output) = self.outputs.iter().find(|o| o.name == name) else {
+                continue;
+            };
+
+            let surface = compositor.create_surface(qh, ());
+            let layer_surface = layer_shell.get_layer_surface(
+                &surface,
+                Some(&output.output),
+                Layer::Top,
+                "abar".into(),
+                qh,
+                name,
+            );
+
+            layer_surface.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
+            layer_surface.set_exclusive_zone(initial_height as i32);
+            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+            layer_surface.set_size(0, initial_height);
+
+            surface.commit();
+
+            self.bars.push(Bar {
+                output_name: name,
+                surface,
+                layer_surface,
+                pending_configure: None,
+                buffer: None,
+                pool: None,
+                pool_file: None,
+                bar_width: 1,
+                bar_height: initial_height,
+                computed: None,
+            });
+            debug!(output_name = name, "layer surface created for output");
         }
-        let Some(compositor) = self.compositor.as_ref() else {
-            return;
-        };
-        let Some(layer_shell) = self.layer_shell.as_ref() else {
-            return;
-        };
+    }
 
-        let surface = compositor.create_surface(qh, ());
-        let layer_surface =
-            layer_shell.get_layer_surface(&surface, None, Layer::Top, "abar".into(), qh, ());
+    /// Destroy the bar (if any) associated with a `wl_output` that just went away.
+    fn remove_output(&mut self, name: u32) {
+        self.outputs.retain(|o| o.name != name);
 
-        layer_surface.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
-        layer_surface.set_exclusive_zone(self.bar_height as i32);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer_surface.set_size(0, self.bar_height);
+        if let Some(idx) = self.bars.iter().position(|b| b.output_name == name) {
+            let bar = self.bars.remove(idx);
+            bar.layer_surface.destroy();
+            bar.surface.destroy();
 
-        surface.commit();
+            if self.pointer.active_bar_output == Some(name) {
+                self.pointer.active_bar_output = None;
+                self.pointer.hovered = None;
+                self.pointer.pressed = None;
+            }
+            debug!(output_name = name, "bar removed for disconnected output");
+        }
+    }
 
-        self.surface = Some(surface);
-        self.layer_surface = Some(layer_surface);
-        debug!("layer surface created (initial commit without buffer)");
+    /// Index into `self.bars` of the bar currently under the pointer, if any.
+    fn active_bar_idx(&self) -> Option<usize> {
+        let name = self.pointer.active_bar_output?;
+        self.bars.iter().position(|b| b.output_name == name)
     }
 
     fn bind_pointer(&mut self, seat: &wl_seat::WlSeat, qh: &QueueHandle<Self>) {
@@ -540,32 +611,39 @@ impl AppState {
 
     /// Recompute hovered island from current pointer position and repaint if it changed.
     fn update_hover(&mut self, qh: &QueueHandle<Self>) {
+        let Some(bar_idx) = self.active_bar_idx() else {
+            return;
+        };
         let x = self.pointer.x;
         let y = self.pointer.y;
-        let new_hover = self
+        let new_hover = self.bars[bar_idx]
             .computed
             .as_ref()
             .and_then(|c| crate::hit_test::segment_coords_at(c, x, y));
         if new_hover != self.pointer.hovered {
             self.pointer.hovered = new_hover;
-            if let Some(shm) = self.shm.clone()
-                && let Err(e) = self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
-            {
-                warn!(error = %e, "hover repaint failed");
+            if let Some(shm) = self.shm.clone() {
+                let (w, h) = (self.bars[bar_idx].bar_width, self.bars[bar_idx].bar_height);
+                if let Err(e) = self.resize_and_paint(bar_idx, &shm, qh, w, h) {
+                    warn!(error = %e, "hover repaint failed");
+                }
             }
         }
     }
 
     /// Clear hover and pressed state on pointer leave, repaint if needed.
-    fn clear_interaction(&mut self, qh: &QueueHandle<Self>) {
+    fn clear_interaction(&mut self, output_name: u32, qh: &QueueHandle<Self>) {
         let had = self.pointer.hovered.is_some() || self.pointer.pressed.is_some();
         self.pointer.hovered = None;
         self.pointer.pressed = None;
-        if had
-            && let Some(shm) = self.shm.clone()
-            && let Err(e) = self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
-        {
-            warn!(error = %e, "leave repaint failed");
+        let Some(bar_idx) = self.bars.iter().position(|b| b.output_name == output_name) else {
+            return;
+        };
+        if had && let Some(shm) = self.shm.clone() {
+            let (w, h) = (self.bars[bar_idx].bar_width, self.bars[bar_idx].bar_height);
+            if let Err(e) = self.resize_and_paint(bar_idx, &shm, qh, w, h) {
+                warn!(error = %e, "leave repaint failed");
+            }
         }
     }
 
@@ -574,6 +652,7 @@ impl AppState {
         items: Vec<crate::model::SubmenuItemConfig>,
         seg_x: f64,
         seg_right: f64,
+        bar_idx: usize,
         qh: &QueueHandle<Self>,
     ) {
         self.close_submenu(qh);
@@ -603,13 +682,20 @@ impl AppState {
             compositor.create_surface(qh, ())
         };
 
+        let bar_output_name = self.bars[bar_idx].output_name;
+        let output = self
+            .outputs
+            .iter()
+            .find(|o| o.name == bar_output_name)
+            .map(|o| &o.output);
+
         let layer_surface = {
             let Some(layer_shell) = self.layer_shell.as_ref() else {
                 return;
             };
             layer_shell.get_layer_surface(
                 &surface,
-                None,
+                output,
                 Layer::Overlay,
                 "abar-submenu".to_string(),
                 qh,
@@ -620,7 +706,7 @@ impl AppState {
         // Always anchor Top|Left. For the normal case align the submenu's left edge with
         // the segment's left edge. If that would overflow the right edge of the output,
         // shift left so the submenu's right edge aligns with the segment's right edge instead.
-        let bar_w = self.bar_width as f64;
+        let bar_w = self.bars[bar_idx].bar_width as f64;
         let left_margin = if seg_x + width as f64 <= bar_w {
             seg_x
         } else {
@@ -753,8 +839,11 @@ impl AppState {
         }
     }
 
-    fn dispatch_pointer_action(&mut self, action: PointerAction, _qh: &QueueHandle<Self>) {
-        if !self.pointer.on_surface || self.computed.is_none() {
+    fn dispatch_pointer_action(&mut self, action: PointerAction, qh: &QueueHandle<Self>) {
+        let Some(bar_idx) = self.active_bar_idx() else {
+            return;
+        };
+        if self.bars[bar_idx].computed.is_none() {
             return;
         }
         let x = self.pointer.x;
@@ -765,7 +854,7 @@ impl AppState {
             && self.clock_timezones.len() > 1
         {
             let clock_hit = {
-                let computed = self.computed.as_ref().unwrap();
+                let computed = self.bars[bar_idx].computed.as_ref().unwrap();
                 crate::hit_test::hit_test(computed, x, y).is_some_and(|s| s.module_id == "clock")
             };
             if clock_hit {
@@ -782,7 +871,7 @@ impl AppState {
                     let fmt = self.clock_formats.first().map_or("%H:%M", |s| s.as_str());
                     crate::modules::clock::current_label(fmt, Some(tz))
                 };
-                if let Err(e) = self.apply_update(ModuleUpdate::text("clock", label), _qh) {
+                if let Err(e) = self.apply_update(ModuleUpdate::text("clock", label), qh) {
                     warn!(error = %e, "clock tz update repaint failed");
                 }
                 return;
@@ -792,7 +881,7 @@ impl AppState {
         // Left click on a segment with a submenu opens/closes it instead of running on_left_click.
         if matches!(action, PointerAction::LeftClick) {
             let submenu_info = {
-                let computed = self.computed.as_ref().unwrap();
+                let computed = self.bars[bar_idx].computed.as_ref().unwrap();
                 crate::hit_test::segment_coords_at(computed, x, y).and_then(
                     |(island_idx, seg_idx)| {
                         let island = &computed.islands[island_idx];
@@ -807,21 +896,21 @@ impl AppState {
             };
             if let Some((items, seg_x, seg_right)) = submenu_info {
                 if self.submenu.is_some() {
-                    self.close_submenu(_qh);
+                    self.close_submenu(qh);
                 } else {
-                    self.open_submenu(items, seg_x, seg_right, _qh);
+                    self.open_submenu(items, seg_x, seg_right, bar_idx, qh);
                 }
                 return;
             }
         }
 
-        let computed = self.computed.as_ref().unwrap();
+        let computed = self.bars[bar_idx].computed.as_ref().unwrap();
         input::dispatch_pointer_action(computed, x, y, action);
     }
 
     fn on_configure(
         &mut self,
-        layer_surface: &ZwlrLayerSurfaceV1,
+        bar_idx: usize,
         serial: u32,
         width: u32,
         height: u32,
@@ -831,29 +920,26 @@ impl AppState {
         let height = height.max(1);
 
         let Some(shm) = self.shm.clone() else {
-            self.pending_configure = Some((width, height, serial));
+            self.bars[bar_idx].pending_configure = Some((width, height, serial));
             return Ok(());
         };
 
-        layer_surface.ack_configure(serial);
-        self.resize_and_paint(&shm, qh, width, height)
+        self.bars[bar_idx].layer_surface.ack_configure(serial);
+        self.resize_and_paint(bar_idx, &shm, qh, width, height)
     }
 
     fn try_flush_pending_configure(&mut self, qh: &QueueHandle<Self>) -> Result<(), AbarError> {
-        if self.pending_configure.is_none() {
-            return Ok(());
-        }
         let Some(shm) = self.shm.clone() else {
             return Ok(());
         };
-        let Some(ls) = self.layer_surface.as_ref() else {
-            return Ok(());
-        };
-        let Some((w, h, serial)) = self.pending_configure.take() else {
-            return Ok(());
-        };
-        ls.ack_configure(serial);
-        self.resize_and_paint(&shm, qh, w, h)
+        for idx in 0..self.bars.len() {
+            let Some((w, h, serial)) = self.bars[idx].pending_configure.take() else {
+                continue;
+            };
+            self.bars[idx].layer_surface.ack_configure(serial);
+            self.resize_and_paint(idx, &shm, qh, w, h)?;
+        }
+        Ok(())
     }
 
     /// Update a segment label and repaint. No-op if the bar hasn't been painted yet.
@@ -878,14 +964,7 @@ impl AppState {
         seg.label = update.text;
         seg.use_markup = update.use_markup;
 
-        // Only repaint once the layer surface has been configured and painted at least once.
-        if self.computed.is_none() {
-            return Ok(());
-        }
-        let Some(shm) = self.shm.clone() else {
-            return Ok(());
-        };
-        self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
+        self.repaint_all_bars(qh)
     }
 
     /// Replace tray segments in the layout with one icon-only segment per visible item,
@@ -1018,24 +1097,35 @@ impl AppState {
             .segments
             .splice(tray_start..tray_start + tray_count, new_segs);
 
-        // Only repaint once the layer surface has been configured and painted at least once.
-        if self.computed.is_none() {
-            return Ok(());
-        }
+        self.repaint_all_bars(qh)
+    }
+
+    /// Repaint every bar that has already been configured/painted at least once,
+    /// preserving each bar's own size. Called after the shared `spec` changes
+    /// (module label/tray updates) so every connected output picks up the change.
+    fn repaint_all_bars(&mut self, qh: &QueueHandle<Self>) -> Result<(), AbarError> {
         let Some(shm) = self.shm.clone() else {
             return Ok(());
         };
-        self.resize_and_paint(&shm, qh, self.bar_width, self.bar_height)
+        for idx in 0..self.bars.len() {
+            if self.bars[idx].computed.is_none() {
+                continue;
+            }
+            let (w, h) = (self.bars[idx].bar_width, self.bars[idx].bar_height);
+            self.resize_and_paint(idx, &shm, qh, w, h)?;
+        }
+        Ok(())
     }
 
     fn resize_and_paint(
         &mut self,
+        bar_idx: usize,
         shm: &wl_shm::WlShm,
         qh: &QueueHandle<Self>,
         width: u32,
         height: u32,
     ) -> Result<(), AbarError> {
-        self.bar_width = width;
+        self.bars[bar_idx].bar_width = width;
 
         // Initialise the font context once; avoids fontconfig rescanning on every repaint.
         if self.font.is_none() {
@@ -1053,21 +1143,32 @@ impl AppState {
                 font.measure(text)
             }
         });
+        // Only the bar currently under the pointer should show hover/press state.
+        let is_active = self.active_bar_idx() == Some(bar_idx);
+        let hovered = if is_active {
+            self.pointer.hovered
+        } else {
+            None
+        };
+        let pressed = if is_active {
+            self.pointer.pressed
+        } else {
+            None
+        };
         let frame = paint_computed(
             &self.spec,
             &computed,
             font,
             &mut self.icon_cache,
-            self.pointer.hovered,
-            self.pointer.pressed,
+            hovered,
+            pressed,
         )?;
-        self.bar_height = frame.height;
-        self.computed = Some(computed);
+        let bar = &mut self.bars[bar_idx];
+        bar.bar_height = frame.height;
+        bar.computed = Some(computed);
 
-        if let Some(ls) = self.layer_surface.as_ref() {
-            ls.set_exclusive_zone(frame.height as i32);
-            ls.set_size(0, frame.height);
-        }
+        bar.layer_surface.set_exclusive_zone(frame.height as i32);
+        bar.layer_surface.set_size(0, frame.height);
 
         let stride = frame.stride;
         let buf_h = frame.height;
@@ -1075,9 +1176,9 @@ impl AppState {
             .checked_mul(buf_h as u64)
             .ok_or_else(|| AbarError::WaylandProtocol("buffer size overflow".into()))?;
 
-        self.buffer.take();
-        self.pool.take();
-        self.pool_file.take();
+        bar.buffer.take();
+        bar.pool.take();
+        bar.pool_file.take();
 
         let mut file = tempfile::tempfile_in("/dev/shm").map_err(|source| AbarError::Io {
             path: std::path::PathBuf::from("/dev/shm"),
@@ -1106,17 +1207,14 @@ impl AppState {
             (),
         );
 
-        let surface = self
-            .surface
-            .as_ref()
-            .ok_or_else(|| AbarError::WaylandProtocol("missing wl_surface during paint".into()))?;
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, width as i32, buf_h as i32);
-        surface.commit();
+        let bar = &mut self.bars[bar_idx];
+        bar.surface.attach(Some(&buffer), 0, 0);
+        bar.surface.damage_buffer(0, 0, width as i32, buf_h as i32);
+        bar.surface.commit();
 
-        self.pool_file = Some(file);
-        self.pool = Some(pool);
-        self.buffer = Some(buffer);
+        bar.pool_file = Some(file);
+        bar.pool = Some(pool);
+        bar.buffer = Some(buffer);
 
         let _ = height;
         Ok(())
@@ -1136,13 +1234,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            match interface.as_str() {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => match interface.as_str() {
                 "wl_compositor" => {
                     let compositor = registry.bind::<wl_compositor::WlCompositor, _, _>(
                         name,
@@ -1151,7 +1248,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         (),
                     );
                     state.compositor = Some(compositor);
-                    state.try_init_layer_shell(qh);
+                    state.create_bars_for_new_outputs(qh);
                 }
                 "wl_shm" => {
                     let shm = registry.bind::<wl_shm::WlShm, _, _>(name, 1.min(version), qh, ());
@@ -1165,14 +1262,24 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     let shell =
                         registry.bind::<ZwlrLayerShellV1, _, _>(name, 4.min(version), qh, ());
                     state.layer_shell = Some(shell);
-                    state.try_init_layer_shell(qh);
+                    state.create_bars_for_new_outputs(qh);
                 }
                 "wl_seat" => {
                     let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 7.min(version), qh, ());
                     state.seat = Some(seat);
                 }
+                "wl_output" => {
+                    let output =
+                        registry.bind::<wl_output::WlOutput, _, _>(name, 4.min(version), qh, ());
+                    state.outputs.push(OutputInfo { name, output });
+                    state.create_bars_for_new_outputs(qh);
+                }
                 _ => {}
+            },
+            wl_registry::Event::GlobalRemove { name } => {
+                state.remove_output(name);
             }
+            _ => {}
         }
     }
 }
@@ -1212,17 +1319,25 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
     ) {
         match event {
             wl_pointer::Event::Enter { surface, .. } => {
-                state.pointer.on_surface =
-                    state.surface.as_ref().is_some_and(|ours| &surface == ours);
+                state.pointer.active_bar_output = state
+                    .bars
+                    .iter()
+                    .find(|b| b.surface == surface)
+                    .map(|b| b.output_name);
                 state.pointer.on_submenu = state
                     .submenu
                     .as_ref()
                     .is_some_and(|sm| surface == sm.surface);
             }
             wl_pointer::Event::Leave { surface, .. } => {
-                if state.surface.as_ref().is_some_and(|ours| &surface == ours) {
-                    state.pointer.on_surface = false;
-                    state.clear_interaction(qh);
+                if let Some(output_name) = state
+                    .bars
+                    .iter()
+                    .find(|b| b.surface == surface)
+                    .map(|b| b.output_name)
+                {
+                    state.pointer.active_bar_output = None;
+                    state.clear_interaction(output_name, qh);
                 }
                 if state
                     .submenu
@@ -1283,11 +1398,16 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                     } else {
                         // Normal bar button press.
                         state.pointer.pressed = state.pointer.hovered;
-                        if let Some(shm) = state.shm.clone()
-                            && let Err(e) =
-                                state.resize_and_paint(&shm, qh, state.bar_width, state.bar_height)
+                        if let Some(bar_idx) = state.active_bar_idx()
+                            && let Some(shm) = state.shm.clone()
                         {
-                            warn!(error = %e, "press repaint failed");
+                            let (w, h) = (
+                                state.bars[bar_idx].bar_width,
+                                state.bars[bar_idx].bar_height,
+                            );
+                            if let Err(e) = state.resize_and_paint(bar_idx, &shm, qh, w, h) {
+                                warn!(error = %e, "press repaint failed");
+                            }
                         }
                         let action = match button {
                             BTN_LEFT => Some(PointerAction::LeftClick),
@@ -1303,11 +1423,16 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                     && state.pointer.pressed.is_some()
                 {
                     state.pointer.pressed = None;
-                    if let Some(shm) = state.shm.clone()
-                        && let Err(e) =
-                            state.resize_and_paint(&shm, qh, state.bar_width, state.bar_height)
+                    if let Some(bar_idx) = state.active_bar_idx()
+                        && let Some(shm) = state.shm.clone()
                     {
-                        warn!(error = %e, "release repaint failed");
+                        let (w, h) = (
+                            state.bars[bar_idx].bar_width,
+                            state.bars[bar_idx].bar_height,
+                        );
+                        if let Err(e) = state.resize_and_paint(bar_idx, &shm, qh, w, h) {
+                            warn!(error = %e, "release repaint failed");
+                        }
                     }
                 }
             }
@@ -1346,29 +1471,48 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
     }
 }
 
-impl Dispatch<ZwlrLayerSurfaceV1, ()> for AppState {
+impl Dispatch<ZwlrLayerSurfaceV1, u32> for AppState {
     fn event(
         state: &mut Self,
-        layer_surface: &ZwlrLayerSurfaceV1,
+        _layer_surface: &ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        _: &(),
+        data: &u32,
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
+        let output_name = *data;
         match event {
             zwlr_layer_surface_v1::Event::Configure {
                 serial,
                 width,
                 height,
             } => {
-                if let Err(e) = state.on_configure(layer_surface, serial, width, height, qh) {
+                let Some(bar_idx) = state.bars.iter().position(|b| b.output_name == output_name)
+                else {
+                    return;
+                };
+                if let Err(e) = state.on_configure(bar_idx, serial, width, height, qh) {
                     warn!(error = %e, "configure handling failed");
                     state.running = false;
                 }
             }
             zwlr_layer_surface_v1::Event::Closed => {
-                debug!("layer surface closed");
-                state.running = false;
+                debug!(output_name, "layer surface closed");
+                if let Some(idx) = state.bars.iter().position(|b| b.output_name == output_name) {
+                    let bar = state.bars.remove(idx);
+                    bar.layer_surface.destroy();
+                    bar.surface.destroy();
+                    if state.pointer.active_bar_output == Some(output_name) {
+                        state.pointer.active_bar_output = None;
+                        state.pointer.hovered = None;
+                        state.pointer.pressed = None;
+                    }
+                }
+                // Only stop the whole app once every bar has been closed (e.g. compositor
+                // shutting down), not just because one monitor was unplugged.
+                if state.bars.is_empty() {
+                    state.running = false;
+                }
             }
             _ => {}
         }
@@ -1433,6 +1577,7 @@ wayland_client::delegate_noop!(AppState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(AppState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(AppState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(AppState: ignore ZwlrLayerShellV1);
+wayland_client::delegate_noop!(AppState: ignore wl_output::WlOutput);
 
 #[cfg(test)]
 mod tests;
