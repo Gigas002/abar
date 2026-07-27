@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- Multi-monitor support — a bar is now created for every connected output
+  instead of just one; module updates, hover/press state, and submenus are
+  tracked per-output.
+
+### Fixed
+
+- `examples/scripts/workspaces/hyprland.sh` — listen for `focusedmon` IPC
+  events in addition to `workspace`/`createworkspace`/`destroyworkspace`/
+  `moveworkspace`. Switching input focus to a monitor whose workspace was
+  already active there only emits `focusedmon`, not `workspace`, so the
+  highlighted workspace could go stale until an unrelated workspace change
+  happened to resync it.
+
 ## [0.1.0] — 11.06.2026
 
 ### Added
