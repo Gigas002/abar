@@ -16,6 +16,11 @@
   already active there only emits `focusedmon`, not `workspace`, so the
   highlighted workspace could go stale until an unrelated workspace change
   happened to resync it.
+- `examples/scripts/tray/tray-menu.sh` — pass `--output <focused output>` to
+  `tofi` (auto-detected via `hyprctl`/`swaymsg`, or overridable with
+  `ABAR_OUTPUT`) so the picker and app submenu open on the currently focused
+  monitor in multi-monitor setups instead of whichever output the compositor
+  defaults to.
 
 ## [0.1.0] — 11.06.2026
 
