@@ -42,8 +42,9 @@ prefer = "theme"
 custom = [
     { name = "system_info", icon = "gnome-system-monitor", on_left_click = "$TERMINAL -e btm" },
     { name = "leave", icon = "system-log-out", submenu = [
+        { content = "logout", action = "loginctl terminate-session self" },
         { content = "sleep", action = "systemctl suspend" },
-        { content = "logout", action = "hyprctl dispatch exit" },
+        { content = "reboot", action = "systemctl reboot" },
         { content = "poweroff", action = "systemctl poweroff" },
     ] },
     { name = "audio", icon = "pavucontrol", on_left_click = "pavucontrol", on_scroll_up = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+", on_scroll_down = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" },
