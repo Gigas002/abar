@@ -2,28 +2,17 @@
 
 Minimalistic Wayland-native status bar using Cairo + Pango, inspired by ashell/waybar.
 
+![](examples/preview.png)
+
 ## Requirements
 
 **Build dependencies:**
 
-- Rust toolchain (stable, edition 2024)
+- Rust toolchain
 - `libcairo2-dev` / `cairo`
-- `libpango1.0-dev` / `pango` (includes pangocairo)
+- `libpango1.0-dev` / `pango`
 - `libwayland-dev` / `wayland`
 - A FreeDesktop icon theme (e.g. `hicolor`, `candy-icons`)
-
-## Build
-
-```sh
-# All modules enabled (recommended):
-cargo build --release --features clock,keyboard,workspaces,window,mpris,tray
-
-# With SVG icon support:
-cargo build --release --features clock,keyboard,workspaces,window,mpris,tray,svg
-
-# Minimal (clock only):
-cargo build --release --features clock
-```
 
 ## Features
 
@@ -48,12 +37,6 @@ abar follows XDG conventions:
 | `$XDG_CONFIG_HOME/abar/config.toml`        | Bar layout and module config (default: `~/.config/abar/config.toml`). |
 | `$XDG_CONFIG_HOME/abar/themes/<name>.toml` | Theme file referenced by `theme` key in config.                       |
 | `$XDG_CONFIG_HOME/abar/scripts/`           | Recommended location for exec scripts.                                |
-
-Override paths at launch:
-
-```sh
-abar --config /path/to/config.toml --theme /path/to/theme.toml
-```
 
 See [`examples/config.toml`](examples/config.toml) and
 [`examples/theme.toml`](examples/theme.toml) for annotated reference configs.
@@ -80,7 +63,3 @@ directly contains your icons.
 
 Icons that cannot be resolved are displayed as text (the module name) with a
 warning logged.
-
-## License
-
-[GPL-3.0-only](LICENSE)
