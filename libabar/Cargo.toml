@@ -34,4 +34,4 @@ wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 tempfile = "3"
-resvg = { version = "0.47", optional = true }
+resvg = { version = "0.48", optional = true }
