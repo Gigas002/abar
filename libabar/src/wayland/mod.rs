@@ -1318,7 +1318,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
         qh: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { surface, .. } => {
+            wl_pointer::Event::Enter {
+                surface,
+                surface_x,
+                surface_y,
+                ..
+            } => {
                 state.pointer.active_bar_output = state
                     .bars
                     .iter()
@@ -1328,6 +1333,15 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                     .submenu
                     .as_ref()
                     .is_some_and(|sm| surface == sm.surface);
+                if state.pointer.on_submenu {
+                    state.pointer.submenu_x = surface_x;
+                    state.pointer.submenu_y = surface_y;
+                    state.update_submenu_hover(qh);
+                } else if state.pointer.active_bar_output.is_some() {
+                    state.pointer.x = surface_x;
+                    state.pointer.y = surface_y;
+                    state.update_hover(qh);
+                }
             }
             wl_pointer::Event::Leave { surface, .. } => {
                 if let Some(output_name) = state
@@ -1437,7 +1451,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 }
             }
             wl_pointer::Event::Axis { axis, value, .. } => {
-                if axis != WEnum::Value(Axis::VerticalScroll) || value == 0.0 {
+                if axis != WEnum::Value(Axis::VerticalScroll)
+                    || value == 0.0
+                    || state.pointer.had_axis
+                {
                     return;
                 }
                 state.pointer.had_axis = true;
@@ -1449,13 +1466,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 state.dispatch_pointer_action(action, qh);
             }
             wl_pointer::Event::AxisDiscrete { axis, discrete, .. } => {
-                // Axis already handled this frame (Axis arrives before AxisDiscrete).
                 if state.pointer.had_axis {
                     return;
                 }
                 if axis != WEnum::Value(Axis::VerticalScroll) || discrete == 0 {
                     return;
                 }
+                state.pointer.had_axis = true;
                 let action = if discrete < 0 {
                     PointerAction::ScrollUp
                 } else {
