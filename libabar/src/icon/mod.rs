@@ -349,7 +349,7 @@ pub fn load_svg(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarErro
         .stride_for_width(size)
         .map_err(|_| AbarError::Render("svg stride error".into()))?;
     let mut bgra = vec![0u8; stride as usize * size as usize];
-    for (i, px) in pixmap.data().chunks_exact(4).enumerate() {
+    for (i, px) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
         let row = i / size as usize;
         let col = i % size as usize;
         let off = row * stride as usize + col * 4;
