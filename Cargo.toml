@@ -10,4 +10,4 @@ homepage = "https://github.com/Gigas002/abar"
 description = "Minimalistic wayland-native bar, created with pango and cairo and inspired by ashell/waybar"
 keywords = ["wayland", "bar", "pango", "cairo", "ashell", "waybar"]
 repository = "https://github.com/Gigas002/abar"
-version = "0.1.0"
+version = "0.2.0"
