@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use cairo::ImageSurface;
+use vello_cpu::kurbo::{Affine, Rect};
+use vello_cpu::peniko::{ImageQuality, ImageSampler};
+use vello_cpu::{Image, ImageSource, Pixmap, RenderContext, Resources};
 
 use crate::error::AbarError;
 
@@ -22,7 +25,7 @@ pub enum IconLookupMode {
 ///
 /// Not `Send` — keep on the main thread alongside the Wayland event loop.
 pub struct IconCache {
-    entries: HashMap<String, Option<ImageSurface>>,
+    entries: HashMap<String, Option<Arc<Pixmap>>>,
     search_dirs: Vec<PathBuf>,
     theme_name: String,
     mode: IconLookupMode,
@@ -74,15 +77,16 @@ impl IconCache {
         }
     }
 
-    /// Return a cached surface for `name`, loading and scaling to `size` × `size` pixels on first
-    /// access. Returns `None` if the icon cannot be found or loaded.
-    pub fn get(&mut self, name: &str, size: u32) -> Option<&ImageSurface> {
+    /// Return a cached premultiplied-RGBA pixmap for `name`, loading and scaling to
+    /// `size` × `size` pixels on first access. Returns `None` if the icon cannot be found or loaded.
+    pub fn get(&mut self, name: &str, size: u32) -> Option<&Arc<Pixmap>> {
         if !self.entries.contains_key(name) {
             let dirs = self.search_dirs.clone();
             let theme = self.theme_name.clone();
-            let surface = resolve_icon(name, size, &dirs, &theme, self.mode)
-                .and_then(|p| load_icon_file(&p, size).ok().flatten());
-            self.entries.insert(name.to_string(), surface);
+            let pixmap = resolve_icon(name, size, &dirs, &theme, self.mode)
+                .and_then(|p| load_icon_file(&p, size).ok().flatten())
+                .map(Arc::new);
+            self.entries.insert(name.to_string(), pixmap);
         }
         self.entries.get(name)?.as_ref()
     }
@@ -282,7 +286,7 @@ pub fn default_search_dirs() -> Vec<PathBuf> {
 
 /// Load a PNG at `path`, scaling it to `size × size` pixels.
 /// Returns `None` if `path` does not exist (not an error).
-pub fn load_png(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarError> {
+pub fn load_png(path: &Path, size: u32) -> Result<Option<Pixmap>, AbarError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -290,38 +294,45 @@ pub fn load_png(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarErro
         path: path.to_path_buf(),
         source,
     })?;
-    let mut reader = std::io::BufReader::new(file);
-    let src = ImageSurface::create_from_png(&mut reader)
+    let src = Pixmap::from_png(std::io::BufReader::new(file))
         .map_err(|e| AbarError::Render(format!("png load {}: {e}", path.display())))?;
-
-    let src_w = src.width();
-    let src_h = src.height();
-    if src_w <= 0 || src_h <= 0 {
+    if src.width() == 0 || src.height() == 0 {
         return Ok(None);
     }
-
-    let size_i = size as i32;
-    let scaled = ImageSurface::create(cairo::Format::ARgb32, size_i, size_i)
-        .map_err(|e| AbarError::Render(format!("scaled surface: {e}")))?;
-    {
-        let cr = cairo::Context::new(&scaled)
-            .map_err(|e| AbarError::Render(format!("cairo context for icon scale: {e}")))?;
-        cr.scale(
-            f64::from(size) / f64::from(src_w),
-            f64::from(size) / f64::from(src_h),
-        );
-        cr.set_source_surface(&src, 0.0, 0.0)
-            .map_err(|e| AbarError::Render(format!("set_source_surface for icon: {e}")))?;
-        cr.paint()
-            .map_err(|e| AbarError::Render(format!("paint icon pixels: {e}")))?;
-    }
-    Ok(Some(scaled))
+    scale_pixmap(src, size).map(Some)
 }
 
-/// Render an SVG at `path` to a `size × size` Cairo surface.
+/// Resample `src` to `size × size` pixels (no-op when it already has that size).
+fn scale_pixmap(src: Pixmap, size: u32) -> Result<Pixmap, AbarError> {
+    let side = u16::try_from(size)
+        .map_err(|_| AbarError::Render(format!("icon size {size} too large")))?;
+    if src.width() == side && src.height() == side {
+        return Ok(src);
+    }
+    let sx = f64::from(side) / f64::from(src.width());
+    let sy = f64::from(side) / f64::from(src.height());
+
+    let mut ctx = RenderContext::new(side, side);
+    ctx.set_paint(Image {
+        image: ImageSource::Pixmap(Arc::new(src)),
+        sampler: ImageSampler {
+            quality: ImageQuality::High,
+            ..ImageSampler::default()
+        },
+    });
+    ctx.set_paint_transform(Affine::scale_non_uniform(sx, sy));
+    ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(side), f64::from(side)));
+    ctx.flush();
+
+    let mut scaled = Pixmap::new(side, side);
+    ctx.render(&mut scaled, &mut Resources::new());
+    Ok(scaled)
+}
+
+/// Render an SVG at `path` to a `size × size` pixmap.
 /// Returns `None` if `path` does not exist (not an error).
 #[cfg(feature = "svg")]
-pub fn load_svg(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarError> {
+pub fn load_svg(path: &Path, size: u32) -> Result<Option<Pixmap>, AbarError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -337,6 +348,8 @@ pub fn load_svg(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarErro
     if svg_w <= 0.0 || svg_h <= 0.0 {
         return Ok(None);
     }
+    let side = u16::try_from(size)
+        .map_err(|_| AbarError::Render(format!("icon size {size} too large")))?;
 
     let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)
         .ok_or_else(|| AbarError::Render("failed to allocate svg pixmap".into()))?;
@@ -344,34 +357,20 @@ pub fn load_svg(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarErro
         resvg::tiny_skia::Transform::from_scale(size as f32 / svg_w, size as f32 / svg_h);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    // tiny_skia stores premultiplied RGBA; Cairo ARgb32 is premultiplied BGRA on little-endian.
-    let stride = cairo::Format::ARgb32
-        .stride_for_width(size)
-        .map_err(|_| AbarError::Render("svg stride error".into()))?;
-    let mut bgra = vec![0u8; stride as usize * size as usize];
-    for (i, px) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
-        let row = i / size as usize;
-        let col = i % size as usize;
-        let off = row * stride as usize + col * 4;
-        bgra[off] = px[2]; // B
-        bgra[off + 1] = px[1]; // G
-        bgra[off + 2] = px[0]; // R
-        bgra[off + 3] = px[3]; // A
-    }
-
-    let surface = ImageSurface::create_for_data(
-        bgra,
-        cairo::Format::ARgb32,
-        size as i32,
-        size as i32,
-        stride,
-    )
-    .map_err(|e| AbarError::Render(format!("cairo surface from svg: {e}")))?;
-    Ok(Some(surface))
+    // tiny_skia and vello_cpu both store premultiplied RGBA, so the bytes carry over as-is.
+    Ok(Some(Pixmap::from_parts(
+        pixmap.take(),
+        side,
+        side,
+        vello_cpu::PixelMetadata {
+            may_have_transparency: true,
+            alpha_type: vello_cpu::peniko::ImageAlphaType::AlphaPremultiplied,
+        },
+    )))
 }
 
 /// Load any supported icon format (PNG, or SVG when the `svg` feature is enabled).
-fn load_icon_file(path: &Path, size: u32) -> Result<Option<ImageSurface>, AbarError> {
+fn load_icon_file(path: &Path, size: u32) -> Result<Option<Pixmap>, AbarError> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("png") => load_png(path, size),
         #[cfg(feature = "svg")]
@@ -598,4 +597,4 @@ fn find_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

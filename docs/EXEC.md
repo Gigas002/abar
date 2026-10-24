@@ -16,8 +16,8 @@ on unexpected exit with exponential backoff (1 s → 2 s → … → 30 s max).
 
 | Field    | Type            | Required | Description |
 |----------|-----------------|----------|-------------|
-| `text`   | string          | yes      | Text to display. May contain Pango markup when `markup` is `true`. |
-| `markup` | bool            | no       | Default `false`. When `true`, `text` is passed to Pango as markup. |
+| `text`   | string          | yes      | Text to display. May contain Pango-style markup when `markup` is `true`. |
+| `markup` | bool            | no       | Default `false`. When `true`, `text` is parsed as markup (see below). |
 | `icon`   | string \| null  | no       | FreeDesktop icon name or absolute path. Overrides the segment icon. |
 
 Unknown fields are silently ignored.
@@ -31,6 +31,18 @@ jq -cn --arg t "22:05" '{text: $t}'
 # Pango markup (workspaces with colour)
 jq -cn --arg t '<span foreground="#00c1e4">1</span>  2  3' '{text: $t, markup: true}'
 ```
+
+**Markup subset.** abar parses the commonly used part of Pango markup itself:
+
+- Tags: `<span>`, `<b>`, `<i>`, `<u>`, `<s>`, `<big>`, `<small>`, `<tt>`.
+- `<span>` attributes: `foreground`/`fgcolor`/`color`, `background`/`bgcolor`,
+  `fgalpha`/`alpha`, `bgalpha`, `font_family`/`face`, `font_weight`/`weight`,
+  `font_style`/`style`, `font_size`/`size`, `underline`, `strikethrough`.
+  Other attributes are ignored.
+- Colors: `#rgb`, `#rrggbb`, `#rrggbbaa`, `#rrrrggggbbbb`, or a basic color name.
+- Entities: `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&#NN;`, `&#xNN;`.
+
+Markup that fails to parse (unknown tag, unclosed tag, …) is shown as plain text.
 
 ---
 

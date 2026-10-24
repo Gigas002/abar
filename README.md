@@ -1,6 +1,6 @@
 # abar
 
-Minimalistic Wayland-native status bar using Cairo + Pango, inspired by ashell/waybar.
+Minimalistic Wayland-native status bar rendered with [vello_cpu](https://github.com/linebender/vello) + [parley](https://github.com/linebender/parley), inspired by ashell/waybar.
 
 ![](examples/preview.png)
 
@@ -9,9 +9,7 @@ Minimalistic Wayland-native status bar using Cairo + Pango, inspired by ashell/w
 **Build dependencies:**
 
 - Rust toolchain
-- `libcairo2-dev` / `cairo`
-- `libpango1.0-dev` / `pango`
-- `libwayland-dev` / `wayland`
+- `libfontconfig1-dev` / `fontconfig` (system font discovery)
 - A FreeDesktop icon theme (e.g. `hicolor`, `candy-icons`)
 
 ## Features
