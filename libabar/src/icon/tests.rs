@@ -13,15 +13,18 @@ fn fixture_theme_dir() -> (tempfile::TempDir, PathBuf) {
     (dir, base)
 }
 
-fn write_test_png(path: &std::path::Path, size: i32) {
-    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, size, size).unwrap();
-    {
-        let cr = cairo::Context::new(&surface).unwrap();
-        cr.set_source_rgba(1.0, 0.0, 0.0, 1.0);
-        cr.paint().unwrap();
-    }
-    let mut file = std::fs::File::create(path).unwrap();
-    surface.write_to_png(&mut file).unwrap();
+pub(crate) fn write_test_png(path: &std::path::Path, size: u16) {
+    let red = [255u8, 0, 0, 255].repeat(usize::from(size) * usize::from(size));
+    let pixmap = vello_cpu::Pixmap::from_parts(
+        red,
+        size,
+        size,
+        vello_cpu::PixelMetadata {
+            may_have_transparency: false,
+            alpha_type: vello_cpu::peniko::ImageAlphaType::AlphaPremultiplied,
+        },
+    );
+    std::fs::write(path, pixmap.into_png().unwrap()).unwrap();
 }
 
 #[test]
