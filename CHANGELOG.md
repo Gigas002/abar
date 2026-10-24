@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- Rendering migrated from Cairo + Pango to `vello_cpu` (rasterization) and
+  `parley` (text shaping/layout); the build no longer needs cairo, pango or
+  glib — only fontconfig for font discovery.
+- Markup is parsed by abar itself and supports the commonly used Pango subset:
+  `<span>` (`foreground`, `background`, `fgalpha`, `bgalpha`, `font_family`,
+  `font_weight`, `font_style`, `font_size`, `underline`, `strikethrough`),
+  `<b>`, `<i>`, `<u>`, `<s>`, `<big>`, `<small>`, `<tt>`. Invalid markup is
+  now shown as plain text instead of being dropped.
+
 ## [0.2.0] — 04.09.2026
 
 ### Added
