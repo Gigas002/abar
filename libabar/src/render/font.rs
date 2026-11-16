@@ -82,7 +82,7 @@ impl FontContext {
 
     /// Shape `text` into a single-line layout. Markup that fails to parse is shown verbatim.
     pub(crate) fn layout(&self, text: &str, is_markup: bool) -> Layout<TextBrush> {
-        let parsed = if is_markup {
+        let mut parsed = if is_markup {
             markup::parse(text, self.size_px).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, markup = text, "invalid markup; rendering as plain text");
                 markup::Parsed {
@@ -96,6 +96,8 @@ impl FontContext {
                 spans: Vec::new(),
             }
         };
+
+        parsed.text = single_line(&parsed.text);
 
         let mut fonts = self.fonts.borrow_mut();
         let mut layouts = self.layouts.borrow_mut();
@@ -143,6 +145,21 @@ impl FontContext {
     pub(crate) fn resources(&self) -> RefMut<'_, Resources> {
         self.resources.borrow_mut()
     }
+}
+
+/// Replace control characters (newlines, tabs, escape, …) so text from scripts
+/// and tray apps always shapes as one line of the bar's height.
+///
+/// Each replacement has the same UTF-8 length as the character it replaces,
+/// so markup span byte ranges stay valid.
+pub(crate) fn single_line(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            c if !c.is_control() => c,
+            c if c.len_utf8() == 1 => ' ',
+            _ => '\u{a0}',
+        })
+        .collect()
 }
 
 fn size_of(layout: &Layout<TextBrush>) -> (f64, f64) {
