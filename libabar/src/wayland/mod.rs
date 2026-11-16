@@ -416,9 +416,8 @@ struct PointerState {
     active_bar_output: Option<u32>,
     x: f64,
     y: f64,
-    // Set when an Axis event fires; cleared on Frame. Prevents the paired
-    // AxisDiscrete (which arrives after Axis) from double-counting the click.
-    had_axis: bool,
+    /// Vertical scroll collected over a pointer frame.
+    scroll: input::ScrollAccumulator,
     /// `(island_index, segment_index)` of the segment currently under the pointer.
     hovered: Option<(usize, usize)>,
     /// `(island_index, segment_index)` of the segment being pressed.
@@ -1227,7 +1226,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.create_bars_for_new_outputs(qh);
                 }
                 "wl_seat" => {
-                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 7.min(version), qh, ());
+                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 8.min(version), qh, ());
                     state.seat = Some(seat);
                 }
                 "wl_output" => {
@@ -1412,38 +1411,43 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                     }
                 }
             }
-            wl_pointer::Event::Axis { axis, value, .. } => {
-                if axis != WEnum::Value(Axis::VerticalScroll)
-                    || value == 0.0
-                    || state.pointer.had_axis
-                {
-                    return;
-                }
-                state.pointer.had_axis = true;
-                let action = if value < 0.0 {
-                    PointerAction::ScrollUp
-                } else {
-                    PointerAction::ScrollDown
-                };
-                state.dispatch_pointer_action(action, qh);
+            // Scroll events are collected per frame; one action runs per
+            // notch (or notch-sized touchpad distance), not per event.
+            wl_pointer::Event::Axis {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                value,
+                ..
+            } => {
+                state.pointer.scroll.axis(value);
             }
-            wl_pointer::Event::AxisDiscrete { axis, discrete, .. } => {
-                if state.pointer.had_axis {
-                    return;
-                }
-                if axis != WEnum::Value(Axis::VerticalScroll) || discrete == 0 {
-                    return;
-                }
-                state.pointer.had_axis = true;
-                let action = if discrete < 0 {
-                    PointerAction::ScrollUp
-                } else {
-                    PointerAction::ScrollDown
-                };
-                state.dispatch_pointer_action(action, qh);
+            wl_pointer::Event::AxisDiscrete {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                discrete,
+            } => {
+                state.pointer.scroll.discrete(discrete);
+            }
+            wl_pointer::Event::AxisValue120 {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                value120,
+            } => {
+                state.pointer.scroll.value120(value120);
+            }
+            wl_pointer::Event::AxisStop {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                ..
+            } => {
+                state.pointer.scroll.stop();
             }
             wl_pointer::Event::Frame => {
-                state.pointer.had_axis = false;
+                let steps = state.pointer.scroll.frame();
+                let action = if steps < 0 {
+                    PointerAction::ScrollUp
+                } else {
+                    PointerAction::ScrollDown
+                };
+                for _ in 0..steps.unsigned_abs() {
+                    state.dispatch_pointer_action(action, qh);
+                }
             }
             _ => {}
         }
