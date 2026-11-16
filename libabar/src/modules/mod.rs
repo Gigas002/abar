@@ -1,6 +1,7 @@
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 
@@ -72,6 +73,7 @@ impl ModuleUpdate {
 #[derive(Debug)]
 pub struct Mailbox {
     pending: Mutex<Pending>,
+    quit: AtomicBool,
     wakeup: UnixStream,
 }
 
@@ -100,6 +102,7 @@ impl Mailbox {
         wakeup.set_nonblocking(true)?;
         Ok(Self {
             pending: Mutex::new(Pending::default()),
+            quit: AtomicBool::new(false),
             wakeup,
         })
     }
@@ -123,6 +126,16 @@ impl Mailbox {
     pub fn post_tray(&self, items: Vec<tray::ipc::MinimalTrayItem>) {
         self.lock().tray = Some(items);
         self.wake();
+    }
+
+    /// Ask the Wayland loop to stop (e.g. on `SIGTERM`).
+    pub fn request_quit(&self) {
+        self.quit.store(true, Ordering::Relaxed);
+        self.wake();
+    }
+
+    pub fn quit_requested(&self) -> bool {
+        self.quit.load(Ordering::Relaxed)
     }
 
     pub fn take(&self) -> Pending {

@@ -32,8 +32,18 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 
-/// Blocks until the layer surface is closed or an unrecoverable error occurs.
+/// Blocks until the layer surface is closed, `SIGTERM`/`SIGINT`/`SIGHUP`
+/// arrives, or an unrecoverable error occurs. Exec scripts are stopped on
+/// every one of these paths.
 pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
+    struct StopScripts;
+    impl Drop for StopScripts {
+        fn drop(&mut self) {
+            crate::exec::stop_scripts();
+        }
+    }
+    let _stop_scripts = StopScripts;
+
     let runtime = spawn::ensure_runtime()?;
     // Read before the per-feature blocks below move fields out of it.
     let _ = &modules;
@@ -87,6 +97,8 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         #[cfg(feature = "tray")]
         tray_island: None,
     };
+
+    runtime.spawn(quit_on_signal(Arc::clone(&mailbox)));
 
     // Spawn clock background task.
     #[cfg(feature = "clock")]
@@ -197,6 +209,11 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
             .dispatch_pending(&mut state)
             .map_err(|e| AbarError::WaylandProtocol(format!("dispatch failed: {e}")))?;
 
+        if state.mailbox.quit_requested() {
+            debug!("termination signal received");
+            state.running = false;
+        }
+
         // Apply everything the background tasks posted, then repaint once.
         if let Err(e) = state.apply_pending(&qh) {
             warn!(error = %e, "module update repaint failed");
@@ -252,6 +269,26 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     }
 
     Ok(())
+}
+
+/// Ask the Wayland loop to stop on `SIGTERM`, `SIGINT` or `SIGHUP`.
+async fn quit_on_signal(mailbox: Arc<Mailbox>) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+        signal(SignalKind::hangup()),
+    ) else {
+        warn!("cannot listen for termination signals");
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+        _ = hup.recv() => {}
+    }
+    mailbox.request_quit();
 }
 
 // ---------------------------------------------------------------------------
