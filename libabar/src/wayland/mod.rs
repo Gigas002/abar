@@ -27,7 +27,7 @@ use crate::error::AbarError;
 use crate::icon::IconCache;
 use crate::input::{self, PointerAction};
 use crate::layout::{ComputedBar, compute_bar};
-use crate::model::BarSpec;
+use crate::model::{BarSpec, DisplayMode};
 use crate::modules::{Mailbox, ModuleConfigs, ModuleUpdate};
 use crate::render::{FontContext, paint_computed};
 use crate::spawn;
@@ -848,11 +848,27 @@ impl AppState {
         let Some(seg) = found else {
             return false;
         };
-        if seg.label == update.text && seg.use_markup == update.use_markup {
+        // A script's `icon` is shown when it can be found; otherwise only the text.
+        let size = self.spec.style.font_size.round() as u32;
+        let icon = update
+            .icon
+            .filter(|name| self.icon_cache.get(name, size).is_some());
+        let mode = match (&icon, update.text.is_empty()) {
+            (None, _) => DisplayMode::TextOnly,
+            (Some(_), true) => DisplayMode::IconOnly,
+            (Some(_), false) => DisplayMode::IconText,
+        };
+        if seg.label == update.text
+            && seg.use_markup == update.use_markup
+            && seg.icon_name == icon
+            && seg.display_mode == mode
+        {
             return false;
         }
         seg.label = update.text;
         seg.use_markup = update.use_markup;
+        seg.icon_name = icon;
+        seg.display_mode = mode;
         true
     }
 

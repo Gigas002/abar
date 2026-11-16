@@ -14,11 +14,11 @@ on unexpected exit with exponential backoff (1 s → 2 s → … → 30 s max).
 { "text": "string", "markup": false, "icon": null }
 ```
 
-| Field    | Type            | Required | Description |
-|----------|-----------------|----------|-------------|
-| `text`   | string          | yes      | Text to display. May contain Pango-style markup when `markup` is `true`. |
-| `markup` | bool            | no       | Default `false`. When `true`, `text` is parsed as markup (see below). |
-| `icon`   | string \| null  | no       | FreeDesktop icon name or absolute path. Overrides the segment icon. |
+| Field    | Type           | Required | Description                                                                                                                  |
+| -------- | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `text`   | string         | yes      | Text to display. May contain Pango-style markup when `markup` is `true`.                                                     |
+| `markup` | bool           | no       | Default `false`. When `true`, `text` is parsed as markup (see below).                                                        |
+| `icon`   | string \| null | no       | FreeDesktop icon name or absolute path, shown before the text (alone when `text` is empty). Ignored when it cannot be found. |
 
 Unknown fields are silently ignored.
 
@@ -55,8 +55,8 @@ The `keyboard` module expects one JSON object per line using a `label` field
 { "label": "en-US" }
 ```
 
-| Field   | Type   | Required | Description |
-|---------|--------|----------|-------------|
+| Field   | Type   | Required | Description                            |
+| ------- | ------ | -------- | -------------------------------------- |
 | `label` | string | yes      | Layout name to display in the segment. |
 
 See `examples/scripts/keyboard/hyprland.sh` for a working Hyprland example.
@@ -70,17 +70,27 @@ one SNI tray item:
 
 ```json
 [
-  { "app_id": "nm-applet", "title": "Network", "status": "Active", "icon_handle": "network-wireless" },
-  { "app_id": "pasystray", "title": null,       "status": "Passive", "icon_handle": null }
+  {
+    "app_id": "nm-applet",
+    "title": "Network",
+    "status": "Active",
+    "icon_handle": "network-wireless"
+  },
+  {
+    "app_id": "pasystray",
+    "title": null,
+    "status": "Passive",
+    "icon_handle": null
+  }
 ]
 ```
 
-| Field         | Type            | Required | Description |
-|---------------|-----------------|----------|-------------|
-| `app_id`      | string          | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`). |
-| `title`       | string \| null  | no       | Human-readable name shown in fallback pickers. |
-| `status`      | string          | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered. |
-| `icon_handle` | string \| null  | no       | FreeDesktop icon name. Items without a resolvable icon are skipped. |
+| Field         | Type           | Required | Description                                                                       |
+| ------------- | -------------- | -------- | --------------------------------------------------------------------------------- |
+| `app_id`      | string         | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`).          |
+| `title`       | string \| null | no       | Human-readable name shown in fallback pickers.                                    |
+| `status`      | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered. |
+| `icon_handle` | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are skipped.               |
 
 Emit an empty array `[]` to clear the tray:
 

@@ -78,3 +78,30 @@ fn grouped_island_has_multiple_segments() {
     assert_eq!(m.segment_widths.len(), 2);
     assert!(m.width > m.segment_widths[0] + m.segment_widths[1]);
 }
+
+#[test]
+fn icon_text_segment_makes_room_for_icon_and_label() {
+    let style = BarStyle::default();
+    let mut seg = Segment::new("window", "abc");
+    let text_only = measure_island(
+        &Island {
+            segments: vec![seg.clone()],
+        },
+        &style,
+        &fixed_measure,
+    );
+    seg.icon_name = Some("firefox".into());
+    seg.display_mode = DisplayMode::IconText;
+    let with_icon = measure_island(
+        &Island {
+            segments: vec![seg],
+        },
+        &style,
+        &fixed_measure,
+    );
+    assert_eq!(
+        with_icon.segment_widths[0],
+        text_only.segment_widths[0] + style.font_size + icon_text_gap(&style)
+    );
+    assert_eq!(with_icon.height, text_only.height);
+}
