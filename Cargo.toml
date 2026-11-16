@@ -9,4 +9,4 @@ authors = ["gigas002 <gigas002@pm.me>"]
 description = "Minimalistic wayland-native bar, rendered with vello_cpu and parley and inspired by ashell/waybar"
 keywords = ["wayland", "bar", "vello", "parley", "waybar"]
 repository = "https://github.com/Gigas002/abar"
-version = "0.2.0"
+version = "0.3.0"
