@@ -766,6 +766,7 @@ dependencies = [
  "tracing",
  "vello_cpu",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
 ]
 

@@ -12,6 +12,12 @@ use wayland_client::protocol::{
     wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup::{self, XdgPopup},
+    xdg_positioner::{Anchor as PopupAnchor, ConstraintAdjustment, Gravity},
+    xdg_surface::{self, XdgSurface},
+    xdg_wm_base::{self, XdgWmBase},
+};
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
@@ -73,6 +79,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         compositor: None,
         shm: None,
         layer_shell: None,
+        wm_base: None,
         seat: None,
         outputs: Vec::new(),
         bars: Vec::new(),
@@ -335,18 +342,24 @@ struct PointerState {
     on_submenu: bool,
     submenu_x: f64,
     submenu_y: f64,
+    /// Serial of the last button press, needed to grab a submenu popup.
+    button_serial: u32,
 }
 
+/// An open submenu: an `xdg_popup` on the bar with an explicit grab, so the
+/// compositor closes it (`popup_done`) when the user clicks anywhere else and
+/// gives it keyboard focus only while it is open.
 struct SubmenuState {
     surface: wl_surface::WlSurface,
-    layer_surface: ZwlrLayerSurfaceV1,
+    xdg_surface: XdgSurface,
+    popup: XdgPopup,
+    /// The bar the menu belongs to; its keyboard focus is reset on close.
+    bar_idx: usize,
     buffer: Option<wl_buffer::WlBuffer>,
     items: Vec<crate::model::SubmenuItemConfig>,
     hovered: Option<usize>,
     item_height: f64,
     width: u32,
-    #[allow(dead_code)]
-    height: u32,
 }
 
 /// A bound Wayland output, tracked so a bar can be created/destroyed for it.
@@ -388,6 +401,7 @@ struct AppState {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
+    wm_base: Option<XdgWmBase>,
     seat: Option<wl_seat::WlSeat>,
     /// Every currently bound output; used to spin up a `Bar` per monitor.
     outputs: Vec<OutputInfo>,
@@ -579,65 +593,66 @@ impl AppState {
             (w, h, item_h)
         };
 
-        let surface = {
-            let Some(compositor) = self.compositor.as_ref() else {
-                return;
-            };
-            compositor.create_surface(qh, ())
+        let (Some(compositor), Some(wm_base), Some(seat)) = (
+            self.compositor.as_ref(),
+            self.wm_base.as_ref(),
+            self.seat.as_ref(),
+        ) else {
+            warn!("compositor lacks xdg_wm_base or a seat; cannot open submenu");
+            return;
         };
+        let surface = compositor.create_surface(qh, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, qh, ());
 
-        let bar_output_name = self.bars[bar_idx].output_name;
-        let output = self
-            .outputs
-            .iter()
-            .find(|o| o.name == bar_output_name)
-            .map(|o| &o.output);
+        // Below the segment, left edges aligned; the compositor slides it
+        // back on screen when it would overflow the output.
+        let bar = &self.bars[bar_idx];
+        let positioner = wm_base.create_positioner(qh, ());
+        positioner.set_size(width as i32, height as i32);
+        positioner.set_anchor_rect(
+            seg_x.floor() as i32,
+            0,
+            ((seg_right - seg_x).ceil() as i32).max(1),
+            bar.bar_height as i32,
+        );
+        positioner.set_anchor(PopupAnchor::BottomLeft);
+        positioner.set_gravity(Gravity::BottomRight);
+        positioner
+            .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY);
 
-        let layer_surface = {
-            let Some(layer_shell) = self.layer_shell.as_ref() else {
-                return;
-            };
-            layer_shell.get_layer_surface(
-                &surface,
-                output,
-                Layer::Overlay,
-                "abar-submenu".to_string(),
-                qh,
-                true,
-            )
-        };
-
-        // Always anchor Top|Left. For the normal case align the submenu's left edge with
-        // the segment's left edge. If that would overflow the right edge of the output,
-        // shift left so the submenu's right edge aligns with the segment's right edge instead.
-        let bar_w = self.bars[bar_idx].bar_width as f64;
-        let left_margin = if seg_x + width as f64 <= bar_w {
-            seg_x
-        } else {
-            (seg_right - width as f64).max(0.0)
-        };
-
-        layer_surface.set_anchor(Anchor::Top | Anchor::Left);
-        layer_surface.set_margin(0, 0, 0, left_margin as i32);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-        layer_surface.set_size(width, height);
+        let popup = xdg_surface.get_popup(None, &positioner, qh, ());
+        // Take keyboard focus (for Esc) only while the menu is open. The grab
+        // ends on any click elsewhere, which also gives focus back.
+        bar.layer_surface
+            .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        bar.surface.commit();
+        bar.layer_surface.get_popup(&popup);
+        popup.grab(seat, self.pointer.button_serial);
+        positioner.destroy();
         surface.commit();
 
         self.submenu = Some(SubmenuState {
             surface,
-            layer_surface,
+            xdg_surface,
+            popup,
+            bar_idx,
             buffer: None,
             items,
             hovered: None,
             item_height,
             width,
-            height,
         });
     }
 
     fn close_submenu(&mut self, _qh: &QueueHandle<Self>) {
         if let Some(sm) = self.submenu.take() {
-            sm.layer_surface.destroy();
+            if let Some(bar) = self.bars.get(sm.bar_idx) {
+                bar.layer_surface
+                    .set_keyboard_interactivity(KeyboardInteractivity::None);
+                bar.surface.commit();
+            }
+            sm.popup.destroy();
+            sm.xdg_surface.destroy();
             sm.surface.destroy();
             if let Some(buffer) = sm.buffer {
                 buffer.destroy();
@@ -1129,6 +1144,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         state.running = false;
                     }
                 }
+                "xdg_wm_base" => {
+                    state.wm_base =
+                        Some(registry.bind::<XdgWmBase, _, _>(name, 3.min(version), qh, ()));
+                }
                 "zwlr_layer_shell_v1" => {
                     let shell =
                         registry.bind::<ZwlrLayerShellV1, _, _>(name, 4.min(version), qh, ());
@@ -1260,10 +1279,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 }
             }
             wl_pointer::Event::Button {
+                serial,
                 button,
                 state: btn_state,
                 ..
             } => {
+                if btn_state == WEnum::Value(ButtonState::Pressed) {
+                    state.pointer.button_serial = serial;
+                }
                 if btn_state == WEnum::Value(ButtonState::Pressed) {
                     if state.pointer.on_submenu {
                         // Click inside submenu: run the hovered item's action then close.
@@ -1435,30 +1458,52 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
     }
 }
 
-/// Dispatch for the submenu layer surface (userdata = `true` distinguishes it from the bar).
-impl Dispatch<ZwlrLayerSurfaceV1, bool> for AppState {
+impl Dispatch<XdgWmBase, ()> for AppState {
+    fn event(
+        _: &mut Self,
+        wm_base: &XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<XdgSurface, ()> for AppState {
     fn event(
         state: &mut Self,
-        layer_surface: &ZwlrLayerSurfaceV1,
-        event: zwlr_layer_surface_v1::Event,
-        _: &bool,
+        xdg_surface: &XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        match event {
-            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
-                layer_surface.ack_configure(serial);
-                if let Err(e) = state.repaint_submenu(qh) {
-                    warn!(error = %e, "submenu configure repaint failed");
-                }
+        if let xdg_surface::Event::Configure { serial } = event {
+            xdg_surface.ack_configure(serial);
+            if let Err(e) = state.repaint_submenu(qh) {
+                warn!(error = %e, "submenu configure repaint failed");
             }
-            zwlr_layer_surface_v1::Event::Closed => {
-                debug!("submenu layer surface closed");
-                // Drop the state but don't call close_submenu (which would call destroy() again).
-                state.submenu = None;
-                state.pointer.on_submenu = false;
-            }
-            _ => {}
+        }
+    }
+}
+
+impl Dispatch<XdgPopup, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &XdgPopup,
+        event: xdg_popup::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        // The user clicked outside the menu (or the grab was refused).
+        if let xdg_popup::Event::PopupDone = event {
+            debug!("submenu dismissed");
+            state.close_submenu(qh);
         }
     }
 }
@@ -1495,6 +1540,7 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for AppState {
     }
 }
 wayland_client::delegate_noop!(AppState: ignore ZwlrLayerShellV1);
+wayland_client::delegate_noop!(AppState: ignore wayland_protocols::xdg::shell::client::xdg_positioner::XdgPositioner);
 wayland_client::delegate_noop!(AppState: ignore wl_output::WlOutput);
 
 #[cfg(test)]
