@@ -17,4 +17,13 @@ pub enum TrayItemStatus {
     Active,
     Passive,
     NeedsAttention,
+    /// Any other value; shown like `Active`, so one unexpected status
+    /// does not make the whole tray update unreadable.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Quote `s` as one `sh` word, so it reaches the command verbatim.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }

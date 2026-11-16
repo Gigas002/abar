@@ -929,7 +929,8 @@ impl AppState {
             };
             let mut events = tray_events.clone();
             if tray_feed_id {
-                let id = &i.app_id;
+                // The id comes from the app; quote it so it stays one argument.
+                let id = crate::modules::tray::ipc::shell_quote(&i.app_id);
                 let append = |opt: Option<String>| opt.map(|cmd| format!("{cmd} {id}"));
                 events.on_left_click = append(events.on_left_click);
                 events.on_right_click = append(events.on_right_click);

@@ -98,12 +98,12 @@ one SNI tray item:
 ]
 ```
 
-| Field         | Type           | Required | Description                                                                       |
-| ------------- | -------------- | -------- | --------------------------------------------------------------------------------- |
-| `app_id`      | string         | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`).          |
-| `title`       | string \| null | no       | Human-readable name shown in fallback pickers.                                    |
-| `status`      | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered. |
-| `icon_handle` | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are skipped.               |
+| Field         | Type           | Required | Description                                                                                                               |
+| ------------- | -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `app_id`      | string         | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`).                                                  |
+| `title`       | string \| null | no       | Human-readable name shown in fallback pickers.                                                                            |
+| `status`      | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered; any other value is shown like `Active`. |
+| `icon_handle` | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are skipped.                                                       |
 
 Emit an empty array `[]` to clear the tray:
 
@@ -117,7 +117,8 @@ See `examples/scripts/tray/tray.sh` for the reference script (`trayctl subscribe
 
 When `feed_id = true` in `[tray]`, abar appends each item's `app_id` as a
 positional argument to every configured `on_*` handler when segments are
-rebuilt. For example, with:
+rebuilt. The id is single-quoted, so it arrives as one argument exactly as
+the app reported it, even with spaces or shell characters in it. For example, with:
 
 ```toml
 [tray]
@@ -128,7 +129,7 @@ on_left_click = "~/.config/abar/scripts/tray/tray-menu.sh"
 clicking the `nm-applet` tray item invokes:
 
 ```sh
-sh -c "~/.config/abar/scripts/tray/tray-menu.sh nm-applet"
+sh -c "~/.config/abar/scripts/tray/tray-menu.sh 'nm-applet'"
 ```
 
 See `examples/scripts/tray/tray-menu.sh` for a `tofi`-based picker that uses
