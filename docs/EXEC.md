@@ -44,6 +44,19 @@ jq -cn --arg t '<span foreground="#00c1e4">1</span>  2  3' '{text: $t, markup: t
 
 Markup that fails to parse (unknown tag, unclosed tag, …) is shown as plain text.
 
+### Workspaces environment
+
+The workspaces script gets the theme's `[workspaces]` settings in its
+environment, so it can colour and filter its output:
+
+| Variable                 | From theme key    | Value                                                                                   |
+| ------------------------ | ----------------- | --------------------------------------------------------------------------------------- |
+| `ABAR_WS_ACTIVE_COLOR`   | `active_color`    | `#rrggbb` (alpha dropped); unset when the theme has none.                               |
+| `ABAR_WS_INACTIVE_COLOR` | `inactive_color`  | `#rrggbb` (alpha dropped); unset when the theme has none.                               |
+| `ABAR_WS_VISIBILITY`     | `visibility_mode` | `all_monitors` (default), or `monitor_specific`: only the focused monitor's workspaces. |
+
+The example scripts in `examples/scripts/workspaces/` honour all three.
+
 ---
 
 ## Keyboard module — `KeyboardData`

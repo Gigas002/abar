@@ -12,6 +12,7 @@ pub(crate) fn first_line<T: DeserializeOwned + Send + 'static>(command: &str) ->
     ensure_runtime().unwrap().spawn(super::run_exec_handler(
         "test".into(),
         command.into(),
+        Vec::new(),
         move |line: T| {
             let _ = tx.send(line);
         },

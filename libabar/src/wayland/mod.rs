@@ -140,6 +140,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         runtime.spawn(crate::exec::run_exec_handler(
             "keyboard".into(),
             cmd,
+            Vec::new(),
             move |data: crate::modules::keyboard::KeyboardData| {
                 mailbox.post(ModuleUpdate::text("keyboard", data.label));
             },
@@ -147,12 +148,15 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     }
 
     #[cfg(feature = "workspaces")]
-    if let Some(cmd) = modules.workspaces.and_then(|w| w.exec)
+    if let Some(cfg) = modules.workspaces
+        && let Some(cmd) = cfg.exec.clone()
         && on_bar("workspaces")
     {
+        let ws_env = cfg.env();
         runtime.spawn(crate::exec::run_exec_handler(
             "workspaces".into(),
             cmd,
+            ws_env,
             text_module("workspaces", 0),
         ));
     }
@@ -165,6 +169,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         runtime.spawn(crate::exec::run_exec_handler(
             "window".into(),
             cmd,
+            Vec::new(),
             text_module("window", cfg.max_length),
         ));
     }
@@ -177,6 +182,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         runtime.spawn(crate::exec::run_exec_handler(
             "mpris".into(),
             cmd,
+            Vec::new(),
             text_module("mpris", cfg.max_length),
         ));
     }
@@ -192,6 +198,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         runtime.spawn(crate::exec::run_exec_handler(
             "tray".into(),
             cmd,
+            Vec::new(),
             move |items: Vec<crate::modules::tray::ipc::MinimalTrayItem>| mailbox.post_tray(items),
         ));
     }

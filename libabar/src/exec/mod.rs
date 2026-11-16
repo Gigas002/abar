@@ -46,15 +46,19 @@ pub fn stop_scripts() {
 ///
 /// Each stdout line is deserialized as `T`; lines that fail to parse are logged and skipped.
 /// `module_id` only names the module in log messages.
-pub async fn run_exec_handler<T, F>(module_id: String, command: String, deliver: F)
-where
+pub async fn run_exec_handler<T, F>(
+    module_id: String,
+    command: String,
+    env: Vec<(String, String)>,
+    deliver: F,
+) where
     T: DeserializeOwned,
     F: Fn(T) + Send + 'static,
 {
     let mut delay = None;
     loop {
         let started = tokio::time::Instant::now();
-        match run_once::<T, F>(&module_id, &command, &deliver).await {
+        match run_once::<T, F>(&module_id, &command, &env, &deliver).await {
             Ok(()) => {
                 warn!(%module_id, %command, "exec script exited; restarting");
             }
@@ -68,7 +72,12 @@ where
     }
 }
 
-async fn run_once<T, F>(module_id: &str, command: &str, deliver: &F) -> Result<(), String>
+async fn run_once<T, F>(
+    module_id: &str,
+    command: &str,
+    env: &[(String, String)],
+    deliver: &F,
+) -> Result<(), String>
 where
     T: DeserializeOwned,
     F: Fn(T),
@@ -76,6 +85,7 @@ where
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(command)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .stdout(std::process::Stdio::piped())
         // stdin pipe reserved for future back-channel signals
         .stdin(std::process::Stdio::piped())

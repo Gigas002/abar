@@ -25,6 +25,7 @@ fn stopping_scripts_also_stops_what_they_started() {
     ensure_runtime().unwrap().spawn(exec::run_exec_handler(
         "probe".into(),
         r#"sleep 300 & echo "{\"text\":\"$!\"}"; wait"#.into(),
+        Vec::new(),
         move |line: ScriptLine| {
             let _ = tx.send(line.text);
         },
