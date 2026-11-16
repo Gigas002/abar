@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use vello_cpu::kurbo::{Affine, Rect};
 use vello_cpu::peniko::{ImageQuality, ImageSampler};
@@ -21,11 +22,25 @@ pub enum IconLookupMode {
     PreferTheme,
 }
 
+/// A miss is looked up again after this long (the icon may have been
+/// installed, or a tray app's icon file written, in the meantime).
+const MISS_TTL: Duration = Duration::from_secs(10);
+/// Most icons kept; the least recently used go first. Tray apps that point
+/// their icon at a new temp file on every change would otherwise grow the
+/// cache forever.
+const MAX_ENTRIES: usize = 256;
+
+struct Entry {
+    pixmap: Option<Arc<Pixmap>>,
+    loaded: Instant,
+    used: Instant,
+}
+
 /// Pixmap cache keyed by icon name; icons are scaled on first load.
 ///
 /// Not `Send` — keep on the main thread alongside the Wayland event loop.
 pub struct IconCache {
-    entries: HashMap<String, Option<Arc<Pixmap>>>,
+    entries: HashMap<String, Entry>,
     search_dirs: Vec<PathBuf>,
     theme_name: String,
     mode: IconLookupMode,
@@ -80,15 +95,61 @@ impl IconCache {
     /// Return a cached premultiplied-RGBA pixmap for `name`, loading and scaling to
     /// `size` × `size` pixels on first access. Returns `None` if the icon cannot be found or loaded.
     pub fn get(&mut self, name: &str, size: u32) -> Option<&Arc<Pixmap>> {
-        if !self.entries.contains_key(name) {
-            let dirs = self.search_dirs.clone();
-            let theme = self.theme_name.clone();
-            let pixmap = resolve_icon(name, size, &dirs, &theme, self.mode)
+        let now = Instant::now();
+        let fresh = self
+            .entries
+            .get(name)
+            .is_some_and(|e| e.pixmap.is_some() || now.duration_since(e.loaded) < MISS_TTL);
+        if !fresh {
+            if self.entries.len() >= MAX_ENTRIES && !self.entries.contains_key(name) {
+                self.evict_least_recently_used();
+            }
+            let pixmap = resolve_icon(name, size, &self.search_dirs, &self.theme_name, self.mode)
                 .and_then(|p| load_icon_file(&p, size).ok().flatten())
                 .map(Arc::new);
-            self.entries.insert(name.to_string(), pixmap);
+            self.entries.insert(
+                name.to_string(),
+                Entry {
+                    pixmap,
+                    loaded: now,
+                    used: now,
+                },
+            );
         }
-        self.entries.get(name)?.as_ref()
+        let entry = self.entries.get_mut(name)?;
+        entry.used = now;
+        entry.pixmap.as_ref()
+    }
+
+    /// Number of cached names (hits and misses).
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Make every cached miss old enough to be looked up again.
+    #[cfg(test)]
+    pub(crate) fn age_misses(&mut self) {
+        for entry in self.entries.values_mut() {
+            if let Some(earlier) = entry.loaded.checked_sub(MISS_TTL) {
+                entry.loaded = earlier;
+            }
+        }
+    }
+
+    fn evict_least_recently_used(&mut self) {
+        let mut by_use: Vec<(Instant, String)> = self
+            .entries
+            .iter()
+            .map(|(name, e)| (e.used, name.clone()))
+            .collect();
+        by_use.sort();
+        for (_, name) in by_use.into_iter().take(MAX_ENTRIES / 4) {
+            self.entries.remove(&name);
+        }
     }
 }
 
@@ -116,6 +177,12 @@ pub fn resolve_icon(
     theme_name: &str,
     mode: IconLookupMode,
 ) -> Option<PathBuf> {
+    // A theme icon name is a single file name; `../x` or `a/b` would read
+    // files outside the icon themes (names come from tray apps).
+    if !name.starts_with('/') && (name.contains('/') || name.starts_with('.')) {
+        return None;
+    }
+
     // Absolute path: return directly if it exists.
     if name.starts_with('/') {
         let p = Path::new(name);
