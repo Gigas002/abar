@@ -1,8 +1,8 @@
 # abar exec-handler contract
 
 Exec-handler modules spawn a user-provided script (`sh -c <exec>`) and read
-newline-delimited JSON from its stdout. abar restarts the script automatically
-on unexpected exit with exponential backoff (1 s → 2 s → … → 30 s max).
+newline-delimited JSON from its stdout. abar restarts the script whenever it
+exits (see [Script lifecycle](#script-lifecycle)).
 
 ---
 
@@ -144,7 +144,14 @@ this to call `trayctl menu --app-id <app_id>` directly.
 - Lines that are not valid JSON for the expected type are logged as warnings
   and skipped — the script keeps running.
 - When the script exits (for any reason), abar logs a warning and restarts it
-  after a backoff delay starting at 1 s, doubling up to 30 s.
+  after a delay: 1 s, doubling up to 30 s while it keeps exiting within 10 s
+  of starting, and 1 s again after a run of 10 s or more.
+- Each script runs in its own process group. When abar stops (`SIGTERM`,
+  `SIGINT`, `SIGHUP`, or the compositor closing the bar), and before a
+  script is restarted, the whole group gets `SIGTERM`, so helpers such as
+  `socat` or `trayctl subscribe` don't outlive it.
+- When a script prints many lines faster than the bar repaints, only the
+  latest one is shown; the final state is never lost.
 - stdin is kept open as a reserved back-channel (not currently used).
 
 Scripts should be **long-running** where possible (emit an initial line then

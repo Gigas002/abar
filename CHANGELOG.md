@@ -2,7 +2,29 @@
 
 ## Unreleased
 
+### Added
+
+- Exec script lines' `icon` field is shown: before the text, or alone when
+  `text` is empty.
+- Right click on the clock cycles through its `formats`.
+- The workspaces script gets the theme's `[workspaces]` settings as
+  `ABAR_WS_ACTIVE_COLOR`, `ABAR_WS_INACTIVE_COLOR` and `ABAR_WS_VISIBILITY`;
+  the example scripts honour `visibility_mode = "monitor_specific"`.
+- Unknown config and theme keys are logged as warnings.
+
 ### Changed
+
+- A config or theme with a syntax or type error, or a `--config`/`--theme`
+  file that does not exist, now stops abar with the location of the problem
+  instead of silently using the defaults. `font_size` must be in (0, 512].
+- Logs go to stderr, coloured only when it is a terminal.
+- Submenus are `xdg_popup`s of the bar: they close on any click outside them
+  and hold keyboard focus only while open.
+- libabar: `run_exec_handler` takes the script environment and a delivery
+  closure instead of channels; the tray's own reader is gone. The unused
+  workspace label formatter (`format_label`, `workspace_at_x`, …) is removed.
+- Tray items with an unknown `status` are shown like `Active` instead of
+  making the whole tray line unreadable.
 
 - Rendering migrated from Cairo + Pango to `vello_cpu` (rasterization) and
   `parley` (text shaping/layout); the build no longer needs cairo, pango or
@@ -12,6 +34,31 @@
   `font_weight`, `font_style`, `font_size`, `underline`, `strikethrough`),
   `<b>`, `<i>`, `<u>`, `<s>`, `<big>`, `<small>`, `<tt>`. Invalid markup is
   now shown as plain text instead of being dropped.
+
+### Fixed
+
+- Every repaint leaked its shared-memory buffer into the compositor
+  (~220 MB per 1000 hover changes).
+- One mouse wheel notch ran a scroll handler several times (once per
+  axis event); touchpads fired one per tiny movement.
+- A burst of script output could leave the bar on a stale line forever.
+- Exec scripts and their helpers kept running after abar exited; abar did
+  not handle `SIGTERM`.
+- The restart delay for scripts never went back down after reaching 30 s.
+- A newline in a title made the bar two lines tall.
+- The clock showed frozen seconds with `%S`, could stay on the
+  pre-suspend time for up to a minute, and only ever used its first format.
+- abar quit with "Resource temporarily unavailable" when a Wayland read
+  found no complete message.
+- Missing icons were never looked up again, and the icon cache grew without
+  bound with apps that change their icon file.
+
+### Security
+
+- With `feed_id = true`, a tray app's id was put unquoted into a `sh -c`
+  command, so an id like `$(cmd)` ran `cmd` on click. It is now quoted.
+- Relative icon names containing `/` (e.g. `../../x`) from tray apps could
+  read image files outside the icon themes; they are rejected.
 
 ## [0.2.0] — 04.09.2026
 
