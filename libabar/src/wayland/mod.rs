@@ -1,11 +1,9 @@
 use std::io::Read;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-#[cfg(feature = "clock")]
 use std::sync::Arc;
 #[cfg(feature = "clock")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
 use wayland_client::protocol::wl_keyboard;
 
 use rustix::event::{PollFd, PollFlags, poll};
@@ -26,7 +24,7 @@ use crate::icon::IconCache;
 use crate::input::{self, PointerAction};
 use crate::layout::{ComputedBar, compute_bar};
 use crate::model::BarSpec;
-use crate::modules::{ModuleConfigs, ModuleUpdate};
+use crate::modules::{Mailbox, ModuleConfigs, ModuleUpdate};
 use crate::render::{FontContext, paint_computed};
 use crate::spawn;
 
@@ -36,19 +34,17 @@ const BTN_MIDDLE: u32 = 0x112;
 
 /// Blocks until the layer surface is closed or an unrecoverable error occurs.
 pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
-    spawn::ensure_runtime()?;
+    let runtime = spawn::ensure_runtime()?;
+    // Read before the per-feature blocks below move fields out of it.
+    let _ = &modules;
 
-    let (updates_tx, updates_rx) = mpsc::sync_channel::<ModuleUpdate>(64);
-    let (wakeup_rx, wakeup_tx) = UnixStream::pair().map_err(|source| AbarError::Io {
-        path: "/dev/null".into(),
+    let io_err = |source| AbarError::Io {
+        path: "wakeup socket".into(),
         source,
-    })?;
-    wakeup_rx
-        .set_nonblocking(true)
-        .map_err(|source| AbarError::Io {
-            path: "/dev/null".into(),
-            source,
-        })?;
+    };
+    let (wakeup_rx, wakeup_tx) = UnixStream::pair().map_err(io_err)?;
+    wakeup_rx.set_nonblocking(true).map_err(io_err)?;
+    let mailbox = Arc::new(Mailbox::new(wakeup_tx).map_err(io_err)?);
 
     let conn = Connection::connect_to_env()?;
     let display = conn.display();
@@ -77,17 +73,13 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         submenu: None,
         icon_cache: IconCache::with_mode(icon_mode),
         font: None,
-        updates_tx: updates_tx.clone(),
-        updates_rx,
-        wakeup_rx,
+        mailbox: Arc::clone(&mailbox),
         #[cfg(feature = "clock")]
         clock_tz_index: Arc::new(AtomicUsize::new(0)),
         #[cfg(feature = "clock")]
         clock_timezones: Vec::new(),
         #[cfg(feature = "clock")]
         clock_formats: Vec::new(),
-        #[cfg(feature = "tray")]
-        tray_rx: None,
         #[cfg(feature = "tray")]
         tray_events: crate::model::SegmentEvents::default(),
         #[cfg(feature = "tray")]
@@ -101,197 +93,100 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     if let Some(clock_cfg) = modules.clock {
         state.clock_timezones = clock_cfg.timezones.clone();
         state.clock_formats = clock_cfg.formats.clone();
-        let tx = updates_tx.clone();
-        let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-            path: "/dev/null".into(),
-            source,
-        })?;
         let tz_index = state.clock_tz_index.clone();
-        spawn::ensure_runtime()?.spawn(clock_task(tx, wakeup, clock_cfg, tz_index));
+        runtime.spawn(clock_task(Arc::clone(&mailbox), clock_cfg, tz_index));
     }
 
-    // Spawn exec handler for keyboard if configured; initial label is already set in BarSpec.
+    // Exec-driven modules run only when they are on the bar.
+    let on_bar = |module: &str| {
+        let layout = &state.spec.layout;
+        layout
+            .left
+            .iter()
+            .chain(&layout.center)
+            .chain(&layout.right)
+            .flat_map(|island| &island.segments)
+            .any(|seg| seg.module_id == module)
+    };
+    let text_module = |module: &'static str, max_length: usize| {
+        let mailbox = Arc::clone(&mailbox);
+        move |line: crate::modules::ScriptLine| {
+            let mut update = ModuleUpdate::from_script(module, line);
+            if max_length > 0 {
+                update.text = crate::modules::truncate_title(&update.text, max_length);
+            }
+            mailbox.post(update);
+        }
+    };
+    let _ = &text_module;
+
     #[cfg(feature = "keyboard")]
-    if let Some(kb_cfg) = modules.keyboard
-        && let Some(cmd) = kb_cfg.exec
+    if let Some(cmd) = modules.keyboard.and_then(|k| k.exec)
+        && on_bar("keyboard")
     {
-        let has_keyboard = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "keyboard");
-        if has_keyboard {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::keyboard::KeyboardData,
-                _,
-            >(
-                "keyboard".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                |data| ModuleUpdate::text("keyboard", data.label),
-            ));
-        }
+        let mailbox = Arc::clone(&mailbox);
+        runtime.spawn(crate::exec::run_exec_handler(
+            "keyboard".into(),
+            cmd,
+            move |data: crate::modules::keyboard::KeyboardData| {
+                mailbox.post(ModuleUpdate::text("keyboard", data.label));
+            },
+        ));
     }
 
-    // Spawn exec handler for workspaces if configured.
     #[cfg(feature = "workspaces")]
-    if let Some(ws_cfg) = modules.workspaces
-        && let Some(cmd) = ws_cfg.exec
+    if let Some(cmd) = modules.workspaces.and_then(|w| w.exec)
+        && on_bar("workspaces")
     {
-        let has_workspaces = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "workspaces");
-        if has_workspaces {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::ScriptLine,
-                _,
-            >(
-                "workspaces".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                |line| ModuleUpdate::from_script("workspaces", line),
-            ));
-        }
+        runtime.spawn(crate::exec::run_exec_handler(
+            "workspaces".into(),
+            cmd,
+            text_module("workspaces", 0),
+        ));
     }
 
-    // Spawn exec handler for window if configured.
     #[cfg(feature = "window")]
-    if let Some(window_cfg) = modules.window
-        && let Some(cmd) = window_cfg.exec
+    if let Some(cfg) = modules.window
+        && let Some(cmd) = cfg.exec
+        && on_bar("window")
     {
-        let max_length = window_cfg.max_length;
-        let has_window = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "window");
-        if has_window {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::ScriptLine,
-                _,
-            >(
-                "window".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                move |line| {
-                    let mut update = ModuleUpdate::from_script("window", line);
-                    if max_length > 0 {
-                        update.text =
-                            crate::modules::window::truncate_title(&update.text, max_length);
-                    }
-                    update
-                },
-            ));
-        }
+        runtime.spawn(crate::exec::run_exec_handler(
+            "window".into(),
+            cmd,
+            text_module("window", cfg.max_length),
+        ));
     }
 
-    // Spawn exec handler for mpris if configured.
     #[cfg(feature = "mpris")]
-    if let Some(mpris_cfg) = modules.mpris
-        && let Some(cmd) = mpris_cfg.exec
+    if let Some(cfg) = modules.mpris
+        && let Some(cmd) = cfg.exec
+        && on_bar("mpris")
     {
-        let max_length = mpris_cfg.max_length;
-        let has_mpris = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "mpris");
-        if has_mpris {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::ScriptLine,
-                _,
-            >(
-                "mpris".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                move |line| {
-                    let mut update = ModuleUpdate::from_script("mpris", line);
-                    if max_length > 0 {
-                        update.text =
-                            crate::modules::window::truncate_title(&update.text, max_length);
-                    }
-                    update
-                },
-            ));
-        }
+        runtime.spawn(crate::exec::run_exec_handler(
+            "mpris".into(),
+            cmd,
+            text_module("mpris", cfg.max_length),
+        ));
     }
 
-    // Spawn exec handler for tray if configured.
     #[cfg(feature = "tray")]
     if let Some(tray_cfg) = modules.tray
-        && let Some(cmd) = tray_cfg.exec
+        && let Some(cmd) = tray_cfg.exec.clone()
+        && on_bar("tray")
     {
-        let has_tray = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "tray");
-        if has_tray {
-            let (tray_tx, tray_rx) =
-                mpsc::sync_channel::<Vec<crate::modules::tray::ipc::MinimalTrayItem>>(16);
-            state.tray_rx = Some(tray_rx);
-            state.tray_events = tray_cfg.events.clone();
-            state.tray_feed_id = tray_cfg.feed_id;
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::modules::tray::run_tray_exec_handler(
-                cmd, tray_tx, wakeup,
-            ));
-        }
+        state.tray_events = tray_cfg.events.clone();
+        state.tray_feed_id = tray_cfg.feed_id;
+        let mailbox = Arc::clone(&mailbox);
+        runtime.spawn(crate::exec::run_exec_handler(
+            "tray".into(),
+            cmd,
+            move |items: Vec<crate::modules::tray::ipc::MinimalTrayItem>| mailbox.post_tray(items),
+        ));
     }
 
-    // Suppress unused-variable warning when no module features are active.
-    let _ = modules;
-    // All tasks that need the wakeup sender now hold their own clones; drop ours.
-    drop(wakeup_tx);
+    // Keep the bindings used when no module features are active.
+    let _ = (&on_bar, runtime);
+    drop(mailbox);
 
     loop {
         event_queue
@@ -302,28 +197,16 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
             .dispatch_pending(&mut state)
             .map_err(|e| AbarError::WaylandProtocol(format!("dispatch failed: {e}")))?;
 
-        // Apply any module label updates that arrived since the last loop iteration.
-        while let Ok(update) = state.updates_rx.try_recv() {
-            if let Err(e) = state.apply_update(update, &qh) {
-                warn!(error = %e, "module update repaint failed");
-            }
-        }
-
-        // Apply any tray item list updates.
-        #[cfg(feature = "tray")]
-        loop {
-            let items = state.tray_rx.as_ref().and_then(|rx| rx.try_recv().ok());
-            let Some(items) = items else { break };
-            if let Err(e) = state.apply_tray_update(items, &qh) {
-                warn!(error = %e, "tray update repaint failed");
-            }
+        // Apply everything the background tasks posted, then repaint once.
+        if let Err(e) = state.apply_pending(&qh) {
+            warn!(error = %e, "module update repaint failed");
         }
 
         if !state.running {
             break;
         }
 
-        // Flush any surface commits queued by apply_update before blocking in poll;
+        // Flush any surface commits queued by apply_pending before blocking in poll;
         // without this the compositor would not see the updated buffer until the next
         // Wayland event (e.g. pointer motion) triggered another flush.
         event_queue
@@ -335,15 +218,10 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
             continue;
         };
 
-        let wayland_fd = read_guard.connection_fd();
-        // Copy the raw fd so we can borrow it independently of `state`.
-        let wakeup_raw = state.wakeup_rx.as_raw_fd();
-
-        // Poll the Wayland connection and the wakeup pipe; None = wait indefinitely.
+        // Poll the Wayland connection and the wakeup socket; None = wait indefinitely.
         let mut pollfds = [
-            PollFd::from_borrowed_fd(wayland_fd, PollFlags::IN),
-            // SAFETY: wakeup_rx is alive and valid for the duration of this poll call.
-            PollFd::from_borrowed_fd(unsafe { BorrowedFd::borrow_raw(wakeup_raw) }, PollFlags::IN),
+            PollFd::from_borrowed_fd(read_guard.connection_fd(), PollFlags::IN),
+            PollFd::new(&wakeup_rx, PollFlags::IN),
         ];
 
         match poll(&mut pollfds, None) {
@@ -356,14 +234,13 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 return Err(AbarError::WaylandProtocol(format!("poll: {e}")));
             }
         }
+        let wayland_ready = pollfds[0].revents().contains(PollFlags::IN);
 
-        // Drain the wakeup pipe so it doesn't stay readable forever.
-        if pollfds[1].revents().contains(PollFlags::IN) {
-            let mut buf = [0u8; 64];
-            let _ = state.wakeup_rx.read(&mut buf);
-        }
+        // Drain the wakeup socket so it doesn't stay readable forever.
+        let mut buf = [0u8; 256];
+        while matches!((&wakeup_rx).read(&mut buf), Ok(n) if n > 0) {}
 
-        if pollfds[0].revents().contains(PollFlags::IN) {
+        if wayland_ready {
             if let Err(e) = read_guard.read() {
                 return Err(AbarError::WaylandProtocol(format!(
                     "read events failed: {e}"
@@ -383,12 +260,10 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
 
 #[cfg(feature = "clock")]
 async fn clock_task(
-    tx: mpsc::SyncSender<ModuleUpdate>,
-    mut wakeup: UnixStream,
+    mailbox: Arc<Mailbox>,
     config: crate::modules::clock::ClockConfig,
     tz_index: Arc<AtomicUsize>,
 ) {
-    use std::io::Write;
     use tokio::time::{Duration, sleep};
 
     loop {
@@ -400,8 +275,7 @@ async fn clock_task(
         let fmt = config.formats.first().map_or("%H:%M", |s| s.as_str());
         let label = crate::modules::clock::current_label(fmt, tz);
 
-        let _ = tx.try_send(ModuleUpdate::text("clock", label));
-        let _ = wakeup.write_all(&[0u8]);
+        mailbox.post(ModuleUpdate::text("clock", label));
     }
 }
 
@@ -489,18 +363,14 @@ struct AppState {
     submenu: Option<SubmenuState>,
     icon_cache: IconCache,
     font: Option<FontContext>,
-    #[allow(dead_code)]
-    updates_tx: mpsc::SyncSender<ModuleUpdate>,
-    updates_rx: mpsc::Receiver<ModuleUpdate>,
-    wakeup_rx: UnixStream,
+    /// Updates posted by background tasks (exec scripts, clock).
+    mailbox: Arc<Mailbox>,
     #[cfg(feature = "clock")]
     clock_tz_index: Arc<AtomicUsize>,
     #[cfg(feature = "clock")]
     clock_timezones: Vec<chrono_tz::Tz>,
     #[cfg(feature = "clock")]
     clock_formats: Vec<String>,
-    #[cfg(feature = "tray")]
-    tray_rx: Option<mpsc::Receiver<Vec<crate::modules::tray::ipc::MinimalTrayItem>>>,
     #[cfg(feature = "tray")]
     tray_events: crate::model::SegmentEvents,
     #[cfg(feature = "tray")]
@@ -834,7 +704,8 @@ impl AppState {
                     let fmt = self.clock_formats.first().map_or("%H:%M", |s| s.as_str());
                     crate::modules::clock::current_label(fmt, Some(tz))
                 };
-                if let Err(e) = self.apply_update(ModuleUpdate::text("clock", label), qh) {
+                self.set_module(ModuleUpdate::text("clock", label));
+                if let Err(e) = self.repaint_all_bars(qh) {
                     warn!(error = %e, "clock tz update repaint failed");
                 }
                 return;
@@ -905,12 +776,25 @@ impl AppState {
         Ok(())
     }
 
-    /// Update a segment label and repaint. No-op if the bar hasn't been painted yet.
-    fn apply_update(
-        &mut self,
-        update: ModuleUpdate,
-        qh: &QueueHandle<Self>,
-    ) -> Result<(), AbarError> {
+    /// Apply everything waiting in the mailbox and repaint once if anything changed.
+    fn apply_pending(&mut self, qh: &QueueHandle<Self>) -> Result<(), AbarError> {
+        let pending = self.mailbox.take();
+        let mut changed = false;
+        for update in pending.modules {
+            changed |= self.set_module(update);
+        }
+        #[cfg(feature = "tray")]
+        if let Some(items) = pending.tray {
+            changed |= self.set_tray(items);
+        }
+        if changed {
+            self.repaint_all_bars(qh)?;
+        }
+        Ok(())
+    }
+
+    /// Store a module's new label; `false` when nothing visible changed.
+    fn set_module(&mut self, update: ModuleUpdate) -> bool {
         let found = self
             .spec
             .layout
@@ -922,22 +806,20 @@ impl AppState {
             .find(|seg| seg.module_id == update.module_id);
 
         let Some(seg) = found else {
-            return Ok(());
+            return false;
         };
+        if seg.label == update.text && seg.use_markup == update.use_markup {
+            return false;
+        }
         seg.label = update.text;
         seg.use_markup = update.use_markup;
-
-        self.repaint_all_bars(qh)
+        true
     }
 
-    /// Replace tray segments in the layout with one icon-only segment per visible item,
-    /// then repaint. No-op if the bar hasn't been painted yet or no tray slot exists.
+    /// Replace tray segments in the layout with one icon-only segment per visible item;
+    /// `false` when nothing visible changed or no tray slot exists.
     #[cfg(feature = "tray")]
-    fn apply_tray_update(
-        &mut self,
-        items: Vec<crate::modules::tray::ipc::MinimalTrayItem>,
-        qh: &QueueHandle<Self>,
-    ) -> Result<(), AbarError> {
+    fn set_tray(&mut self, items: Vec<crate::modules::tray::ipc::MinimalTrayItem>) -> bool {
         use crate::model::Segment;
         use crate::modules::tray::ipc::TrayItemStatus;
 
@@ -1041,7 +923,7 @@ impl AppState {
         } else if let Some(cached) = self.tray_island {
             cached
         } else {
-            return Ok(());
+            return false;
         };
 
         // Splice the new segments into the island at the cached tray position.
@@ -1056,11 +938,14 @@ impl AppState {
             .iter()
             .filter(|s| s.module_id == "tray" || s.module_id.starts_with("tray:"))
             .count();
+        let old = &island.segments[tray_start..tray_start + tray_count];
+        if old == new_segs.as_slice() {
+            return false;
+        }
         island
             .segments
             .splice(tray_start..tray_start + tray_count, new_segs);
-
-        self.repaint_all_bars(qh)
+        true
     }
 
     /// Repaint every bar that has already been configured/painted at least once,
