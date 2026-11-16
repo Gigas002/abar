@@ -251,10 +251,16 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         while matches!((&wakeup_rx).read(&mut buf), Ok(n) if n > 0) {}
 
         if wayland_ready {
-            if let Err(e) = read_guard.read() {
-                return Err(AbarError::WaylandProtocol(format!(
-                    "read events failed: {e}"
-                )));
+            match read_guard.read() {
+                Ok(_) => {}
+                // Readable without a complete message yet; read again later.
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => {
+                    return Err(AbarError::WaylandProtocol(format!(
+                        "read events failed: {e}"
+                    )));
+                }
             }
         } else {
             drop(read_guard);
