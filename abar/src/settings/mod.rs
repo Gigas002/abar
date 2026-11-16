@@ -47,6 +47,9 @@ impl Settings {
         let font_size = config_base
             .font_size
             .unwrap_or_else(|| ConfigBase::default().font_size.unwrap());
+        if !(font_size.is_finite() && font_size > 0.0 && font_size <= 512.0) {
+            return Err(Error::FontSize(font_size));
+        }
 
         apply_icon_fallbacks(&mut layout, font_size);
 

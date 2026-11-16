@@ -10,6 +10,9 @@ pub struct Events {
     pub on_middle_click: Option<String>,
     pub on_scroll_up: Option<String>,
     pub on_scroll_down: Option<String>,
+    /// Keys of the module table that nothing reads (reported as warnings).
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
 }
 
 pub fn events_for_module(config: &Config, module_id: &str) -> SegmentEvents {

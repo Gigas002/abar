@@ -62,26 +62,13 @@ pub fn themes_dir() -> PathBuf {
 }
 
 impl Theme {
-    pub fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(raw) => match toml::from_str(&raw) {
-                Ok(theme) => theme,
-                Err(err) => {
-                    tracing::warn!(
-                        %err,
-                        path = %path.display(),
-                        "invalid theme, using defaults"
-                    );
-                    Self::default()
-                }
-            },
-            Err(err) => {
-                tracing::warn!(
-                    %err,
-                    path = %path.display(),
-                    "theme not found, using defaults"
-                );
-                Self::default()
+    /// Load the theme at `path`; see [`crate::config::Config::load`].
+    pub fn load(path: &Path, required: bool) -> Result<Self, Error> {
+        match crate::config::load_toml(path, required)? {
+            Some(theme) => Ok(theme),
+            None => {
+                tracing::info!(path = %path.display(), "no theme file, using defaults");
+                Ok(Self::default())
             }
         }
     }
