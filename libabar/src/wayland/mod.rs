@@ -432,8 +432,6 @@ struct PointerState {
 struct SubmenuState {
     surface: wl_surface::WlSurface,
     layer_surface: ZwlrLayerSurfaceV1,
-    pool: Option<wl_shm_pool::WlShmPool>,
-    pool_file: Option<std::fs::File>,
     buffer: Option<wl_buffer::WlBuffer>,
     items: Vec<crate::model::SubmenuItemConfig>,
     hovered: Option<usize>,
@@ -459,12 +457,21 @@ struct Bar {
     surface: wl_surface::WlSurface,
     layer_surface: ZwlrLayerSurfaceV1,
     pending_configure: Option<(u32, u32, u32)>,
+    /// The buffer last attached; released buffers destroy themselves.
     buffer: Option<wl_buffer::WlBuffer>,
-    pool: Option<wl_shm_pool::WlShmPool>,
-    pool_file: Option<std::fs::File>,
     bar_width: u32,
     bar_height: u32,
     computed: Option<ComputedBar>,
+}
+
+impl Bar {
+    fn destroy(self) {
+        self.layer_surface.destroy();
+        self.surface.destroy();
+        if let Some(buffer) = self.buffer {
+            buffer.destroy();
+        }
+    }
 }
 
 struct AppState {
@@ -557,8 +564,6 @@ impl AppState {
                 layer_surface,
                 pending_configure: None,
                 buffer: None,
-                pool: None,
-                pool_file: None,
                 bar_width: 1,
                 bar_height: initial_height,
                 computed: None,
@@ -573,8 +578,7 @@ impl AppState {
 
         if let Some(idx) = self.bars.iter().position(|b| b.output_name == name) {
             let bar = self.bars.remove(idx);
-            bar.layer_surface.destroy();
-            bar.surface.destroy();
+            bar.destroy();
 
             if self.pointer.active_bar_output == Some(name) {
                 self.pointer.active_bar_output = None;
@@ -722,8 +726,6 @@ impl AppState {
         self.submenu = Some(SubmenuState {
             surface,
             layer_surface,
-            pool: None,
-            pool_file: None,
             buffer: None,
             items,
             hovered: None,
@@ -737,6 +739,9 @@ impl AppState {
         if let Some(sm) = self.submenu.take() {
             sm.layer_surface.destroy();
             sm.surface.destroy();
+            if let Some(buffer) = sm.buffer {
+                buffer.destroy();
+            }
         }
         self.pointer.on_submenu = false;
     }
@@ -762,53 +767,12 @@ impl AppState {
             font,
         )?;
 
-        let stride = frame.stride;
-        let buf_h = frame.height;
-        let size = (stride as u64)
-            .checked_mul(buf_h as u64)
-            .ok_or_else(|| AbarError::WaylandProtocol("submenu buffer size overflow".into()))?;
-
-        {
-            let sm = self.submenu.as_mut().unwrap();
-            sm.buffer = None;
-            sm.pool = None;
-            sm.pool_file = None;
-        }
-
-        let mut file = tempfile::tempfile_in("/dev/shm").map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        use std::io::Write;
-        file.write_all(&frame.data)
-            .map_err(|source| AbarError::Io {
-                path: std::path::PathBuf::from("/dev/shm"),
-                source,
-            })?;
-        file.flush().map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            frame.width as i32,
-            buf_h as i32,
-            stride,
-            wl_shm::Format::Argb8888,
-            qh,
-            (),
-        );
-
+        let buffer = shm_buffer(&shm, &frame, qh)?;
         let sm = self.submenu.as_mut().unwrap();
         sm.surface.attach(Some(&buffer), 0, 0);
         sm.surface
-            .damage_buffer(0, 0, frame.width as i32, buf_h as i32);
+            .damage_buffer(0, 0, frame.width as i32, frame.height as i32);
         sm.surface.commit();
-        sm.pool_file = Some(file);
-        sm.pool = Some(pool);
         sm.buffer = Some(buffer);
 
         Ok(())
@@ -1170,55 +1134,53 @@ impl AppState {
         bar.layer_surface.set_exclusive_zone(frame.height as i32);
         bar.layer_surface.set_size(0, frame.height);
 
-        let stride = frame.stride;
-        let buf_h = frame.height;
-        let size = (stride as u64)
-            .checked_mul(buf_h as u64)
-            .ok_or_else(|| AbarError::WaylandProtocol("buffer size overflow".into()))?;
-
-        bar.buffer.take();
-        bar.pool.take();
-        bar.pool_file.take();
-
-        let mut file = tempfile::tempfile_in("/dev/shm").map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        use std::io::Write;
-        file.write_all(&frame.data)
-            .map_err(|source| AbarError::Io {
-                path: std::path::PathBuf::from("/dev/shm"),
-                source,
-            })?;
-        file.flush().map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            width as i32,
-            buf_h as i32,
-            stride,
-            wl_shm::Format::Argb8888,
-            qh,
-            (),
-        );
-
+        let buffer = shm_buffer(shm, &frame, qh)?;
         let bar = &mut self.bars[bar_idx];
         bar.surface.attach(Some(&buffer), 0, 0);
-        bar.surface.damage_buffer(0, 0, width as i32, buf_h as i32);
+        bar.surface
+            .damage_buffer(0, 0, width as i32, frame.height as i32);
         bar.surface.commit();
-
-        bar.pool_file = Some(file);
-        bar.pool = Some(pool);
         bar.buffer = Some(buffer);
 
         let _ = height;
         Ok(())
     }
+}
+
+/// Copy `frame` into a fresh shared-memory buffer.
+///
+/// The pool is destroyed right away (the compositor keeps the memory alive for
+/// as long as the buffer exists), and the buffer destroys itself when the
+/// compositor releases it (see the `wl_buffer` dispatch), so nothing piles up
+/// on the compositor side however often the bar repaints.
+fn shm_buffer(
+    shm: &wl_shm::WlShm,
+    frame: &crate::render::Frame,
+    qh: &QueueHandle<AppState>,
+) -> Result<wl_buffer::WlBuffer, AbarError> {
+    use std::io::Write;
+
+    let shm_err = |source| AbarError::Io {
+        path: std::path::PathBuf::from("/dev/shm"),
+        source,
+    };
+    let size = i32::try_from(frame.data.len())
+        .map_err(|_| AbarError::WaylandProtocol("buffer size overflow".into()))?;
+    let mut file = tempfile::tempfile_in("/dev/shm").map_err(shm_err)?;
+    file.write_all(&frame.data).map_err(shm_err)?;
+
+    let pool = shm.create_pool(file.as_fd(), size, qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        frame.width as i32,
+        frame.height as i32,
+        frame.stride,
+        wl_shm::Format::Argb8888,
+        qh,
+        (),
+    );
+    pool.destroy();
+    Ok(buffer)
 }
 
 // ---------------------------------------------------------------------------
@@ -1517,8 +1479,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, u32> for AppState {
                 debug!(output_name, "layer surface closed");
                 if let Some(idx) = state.bars.iter().position(|b| b.output_name == output_name) {
                     let bar = state.bars.remove(idx);
-                    bar.layer_surface.destroy();
-                    bar.surface.destroy();
+                    bar.destroy();
                     if state.pointer.active_bar_output == Some(output_name) {
                         state.pointer.active_bar_output = None;
                         state.pointer.hovered = None;
@@ -1592,7 +1553,33 @@ wayland_client::delegate_noop!(AppState: ignore wl_compositor::WlCompositor);
 wayland_client::delegate_noop!(AppState: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(AppState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(AppState: ignore wl_shm_pool::WlShmPool);
-wayland_client::delegate_noop!(AppState: ignore wl_buffer::WlBuffer);
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        buffer: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_buffer::Event::Release = event {
+            // Every buffer is attached once; when the compositor is done
+            // with it, nothing will use it again.
+            for slot in state
+                .bars
+                .iter_mut()
+                .map(|b| &mut b.buffer)
+                .chain(state.submenu.iter_mut().map(|sm| &mut sm.buffer))
+            {
+                if slot.as_ref() == Some(buffer) {
+                    *slot = None;
+                }
+            }
+            buffer.destroy();
+        }
+    }
+}
 wayland_client::delegate_noop!(AppState: ignore ZwlrLayerShellV1);
 wayland_client::delegate_noop!(AppState: ignore wl_output::WlOutput);
 
