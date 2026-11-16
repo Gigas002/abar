@@ -118,6 +118,23 @@ pub fn paint_computed(
                         draw_segment_icon(&mut ctx, icons, name, spec.style.font_size, seg);
                     }
                 }
+                DisplayMode::IconText => {
+                    let size = spec.style.font_size;
+                    let icon_w = size + crate::layout::icon_text_gap(&spec.style);
+                    if let Some(name) = &seg.icon_name {
+                        let icon_slot = crate::layout::PlacedSegment {
+                            width: size,
+                            ..seg.clone()
+                        };
+                        draw_segment_icon(&mut ctx, icons, name, size, &icon_slot);
+                    }
+                    let text_slot = crate::layout::PlacedSegment {
+                        x: seg.x + icon_w,
+                        width: (seg.width - icon_w).max(0.0),
+                        ..seg.clone()
+                    };
+                    draw_segment_text(&mut ctx, font, &spec.colors, &text_slot);
+                }
             }
         }
     }

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use chrono::{Local, Timelike, Utc};
 use chrono_tz::Tz;
 
@@ -35,14 +37,72 @@ pub fn current_label(fmt: &str, tz: Option<Tz>) -> String {
     }
 }
 
-/// Milliseconds until the next full minute boundary, minimum 1.
-pub fn ms_until_next_tick() -> u64 {
-    let now = Local::now();
-    let secs_past = now.second() as u64;
-    let nanos_past = now.nanosecond() as u64;
-    ((60 - secs_past) * 1_000)
-        .saturating_sub(nanos_past / 1_000_000)
-        .max(1)
+/// Milliseconds until the next full second, minimum 1.
+///
+/// The clock checks its label every second: formats with seconds tick, and
+/// after a suspend the time is right within a second (a sleep until the next
+/// minute would run on a clock that stops while suspended).
+pub fn ms_until_next_second() -> u64 {
+    let ms_past = u64::from(Local::now().nanosecond() / 1_000_000).min(999);
+    (1_000 - ms_past).max(1)
+}
+
+/// The clock's configuration plus which timezone and format are shown,
+/// shared by the tick task and the pointer handlers.
+#[derive(Debug)]
+pub struct ClockState {
+    config: ClockConfig,
+    timezone: AtomicUsize,
+    format: AtomicUsize,
+}
+
+impl ClockState {
+    pub fn new(config: ClockConfig) -> Self {
+        Self {
+            config,
+            timezone: AtomicUsize::new(0),
+            format: AtomicUsize::new(0),
+        }
+    }
+
+    /// The label for the current time, timezone and format.
+    pub fn label(&self) -> String {
+        let tz = self
+            .config
+            .timezones
+            .get(self.timezone.load(Ordering::Relaxed))
+            .copied();
+        let fmt = self
+            .config
+            .formats
+            .get(self.format.load(Ordering::Relaxed))
+            .map_or("%H:%M", String::as_str);
+        current_label(fmt, tz)
+    }
+
+    /// Show the next (or previous) timezone; `false` with fewer than two.
+    pub fn cycle_timezone(&self, forward: bool) -> bool {
+        cycle(&self.timezone, self.config.timezones.len(), forward)
+    }
+
+    /// Show the next format; `false` with fewer than two.
+    pub fn cycle_format(&self) -> bool {
+        cycle(&self.format, self.config.formats.len(), true)
+    }
+}
+
+fn cycle(index: &AtomicUsize, len: usize, forward: bool) -> bool {
+    if len < 2 {
+        return false;
+    }
+    let cur = index.load(Ordering::Relaxed) % len;
+    let next = if forward {
+        (cur + 1) % len
+    } else {
+        (cur + len - 1) % len
+    };
+    index.store(next, Ordering::Relaxed);
+    true
 }
 
 #[cfg(test)]

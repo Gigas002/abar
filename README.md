@@ -16,7 +16,7 @@ Minimalistic Wayland-native status bar rendered with [vello_cpu](https://github.
 
 | Feature      | Description                                                                          |
 | ------------ | ------------------------------------------------------------------------------------ |
-| `clock`      | Clock module with format rotation and timezone cycling.                              |
+| `clock`      | Clock; right click cycles its formats, scrolling cycles its timezones.               |
 | `keyboard`   | Keyboard layout module driven by an exec script.                                     |
 | `workspaces` | Workspace list module driven by an exec script.                                      |
 | `window`     | Active window title module driven by an exec script.                                 |
@@ -39,6 +39,17 @@ abar follows XDG conventions:
 See [`examples/config.toml`](examples/config.toml) and
 [`examples/theme.toml`](examples/theme.toml) for annotated reference configs.
 
+A config or theme that is not valid TOML, or has a wrong type somewhere,
+stops abar with the file, line and column of the problem. Unknown keys
+(usually typos) are logged as warnings and ignored. Without `--config`, a
+missing `config.toml` means the built-in defaults.
+
+## Running
+
+abar logs to stderr (`RUST_LOG=debug` for more detail). On `SIGTERM`,
+`SIGINT` or `SIGHUP` it closes its bars and stops every exec script along
+with whatever the scripts started.
+
 ## Exec script contract
 
 All exec-handler modules (`keyboard`, `workspaces`, `window`, `mpris`, `tray`)
@@ -55,9 +66,8 @@ preferred, SVG supported via the `svg` feature).
 export XDG_ICON_THEME=candy-icons
 ```
 
-If `XDG_ICON_THEME` is unset, abar falls back to `hicolor`. Theme inheritance
-chains defined in `index.theme` are **not** followed — set the theme that
-directly contains your icons.
+If `XDG_ICON_THEME` is unset, abar falls back to `hicolor`. Themes listed in
+the theme's `index.theme` `Inherits=` line are searched next, then `hicolor`.
 
 Icons that cannot be resolved are displayed as text (the module name) with a
 warning logged.

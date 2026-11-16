@@ -1,3 +1,8 @@
+use std::io::Write as _;
+use std::os::unix::net::UnixStream;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::Deserialize;
 
 /// Newline-delimited JSON record emitted by an exec script to update a module.
@@ -59,6 +64,110 @@ impl ModuleUpdate {
     }
 }
 
+/// Updates waiting for the Wayland loop: the latest one per module.
+///
+/// Background tasks [`post`](Self::post) into it and the loop
+/// [`take`](Self::take)s everything at once. Posting replaces an unread
+/// update for the same module, so a burst of script output never loses the
+/// final state, never queues stale ones, and costs one repaint.
+#[derive(Debug)]
+pub struct Mailbox {
+    pending: Mutex<Pending>,
+    quit: AtomicBool,
+    wakeup: UnixStream,
+}
+
+/// Everything posted since the last [`Mailbox::take`].
+#[derive(Debug, Default)]
+pub struct Pending {
+    pub modules: Vec<ModuleUpdate>,
+    #[cfg(feature = "tray")]
+    pub tray: Option<Vec<tray::ipc::MinimalTrayItem>>,
+}
+
+impl Pending {
+    pub fn is_empty(&self) -> bool {
+        #[cfg(feature = "tray")]
+        if self.tray.is_some() {
+            return false;
+        }
+        self.modules.is_empty()
+    }
+}
+
+impl Mailbox {
+    /// `wakeup` is the write end of the socket the Wayland loop polls; it is
+    /// made non-blocking so a busy loop never stalls a background task.
+    pub fn new(wakeup: UnixStream) -> std::io::Result<Self> {
+        wakeup.set_nonblocking(true)?;
+        Ok(Self {
+            pending: Mutex::new(Pending::default()),
+            quit: AtomicBool::new(false),
+            wakeup,
+        })
+    }
+
+    pub fn post(&self, update: ModuleUpdate) {
+        {
+            let mut pending = self.lock();
+            match pending
+                .modules
+                .iter_mut()
+                .find(|u| u.module_id == update.module_id)
+            {
+                Some(slot) => *slot = update,
+                None => pending.modules.push(update),
+            }
+        }
+        self.wake();
+    }
+
+    #[cfg(feature = "tray")]
+    pub fn post_tray(&self, items: Vec<tray::ipc::MinimalTrayItem>) {
+        self.lock().tray = Some(items);
+        self.wake();
+    }
+
+    /// Ask the Wayland loop to stop (e.g. on `SIGTERM`).
+    pub fn request_quit(&self) {
+        self.quit.store(true, Ordering::Relaxed);
+        self.wake();
+    }
+
+    pub fn quit_requested(&self) -> bool {
+        self.quit.load(Ordering::Relaxed)
+    }
+
+    pub fn take(&self) -> Pending {
+        std::mem::take(&mut *self.lock())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Pending> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn wake(&self) {
+        // A full socket already holds a pending wakeup; nothing to add.
+        let _ = (&self.wakeup).write(&[0u8]);
+    }
+}
+
+/// Truncate a title to at most `max_length` Unicode scalar values, appending "…" if cut.
+///
+/// When `max_length` is zero the title is returned unchanged.
+pub fn truncate_title(title: &str, max_length: usize) -> String {
+    if max_length == 0 {
+        return title.to_string();
+    }
+    let mut chars = title.chars();
+    let truncated: String = chars.by_ref().take(max_length).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
 /// Per-module runtime configuration passed into the Wayland run loop.
 #[derive(Debug, Default)]
 pub struct ModuleConfigs {
@@ -88,3 +197,6 @@ pub mod tray;
 pub mod window;
 #[cfg(feature = "workspaces")]
 pub mod workspaces;
+
+#[cfg(test)]
+mod tests;

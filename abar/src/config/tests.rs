@@ -250,8 +250,68 @@ fn load_missing_file_returns_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     // `path` does not exist — dir only creates the directory, not the file.
-    let cfg = Config::load(&path);
+    let cfg = Config::load(&path, false).unwrap();
     let base = cfg.base.unwrap();
     assert_eq!(base.font_name.as_deref(), Some("NotoSans Nerd Font"));
     assert_eq!(base.font_size, Some(14.0));
+}
+
+#[test]
+fn invalid_or_missing_named_config_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert!(matches!(
+        Config::load(&path, true),
+        Err(crate::error::Error::Read { .. })
+    ));
+    std::fs::write(&path, "[base]\nfont_size = \"big\"\n").unwrap();
+    let err = Config::load(&path, false).unwrap_err();
+    assert!(matches!(err, crate::error::Error::Invalid { .. }));
+    assert!(err.to_string().contains("config.toml"), "{err}");
+}
+
+#[test]
+fn unknown_keys_are_found_everywhere() {
+    let raw = r#"
+        [base]
+        font_sizee = 12
+        [window]
+        exce = "x"
+        on_left_click = "y"
+        [[modules.custom]]
+        name = "power"
+        icon = "system-shutdown"
+        on_right_tap = "z"
+    "#;
+    let (cfg, unknown) = super::parse_toml::<Config>(raw).unwrap();
+    assert_eq!(unknown, ["base.font_sizee"]);
+    assert_eq!(
+        cfg.unknown_module_keys(),
+        ["window.exce", "modules.custom.power.on_right_tap"]
+    );
+    let events = cfg.window.unwrap().events.unwrap();
+    assert_eq!(events.on_left_click.as_deref(), Some("y"));
+}
+
+#[test]
+fn shipped_examples_have_no_unknown_keys() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "toml") {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let unknown = if path.file_name().unwrap() == "theme.toml" {
+            super::parse_toml::<crate::theme::Theme>(&raw).unwrap().1
+        } else {
+            let (cfg, mut unknown) = super::parse_toml::<Config>(&raw).unwrap();
+            unknown.extend(cfg.unknown_module_keys());
+            unknown
+        };
+        assert!(unknown.is_empty(), "{}: {unknown:?}", path.display());
+        checked += 1;
+    }
+    assert!(checked >= 5);
 }

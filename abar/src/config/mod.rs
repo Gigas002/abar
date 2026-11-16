@@ -7,6 +7,9 @@ mod modules;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
+
+use crate::error::Error;
 
 #[allow(unused_imports)]
 pub use events::Events;
@@ -76,28 +79,118 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(raw) => match toml::from_str(&raw) {
-                Ok(config) => config,
-                Err(err) => {
-                    tracing::warn!(
-                        %err,
-                        path = %path.display(),
-                        "invalid config, using defaults"
-                    );
-                    Self::default()
-                }
-            },
-            Err(err) => {
-                tracing::warn!(
-                    %err,
-                    path = %path.display(),
-                    "config not found, using defaults"
-                );
-                Self::default()
-            }
+    /// Load the config at `path`. A missing file gives the defaults unless
+    /// `required` (the user named it with `--config`); a file that is not
+    /// valid is an error, so a typo never silently resets the bar.
+    pub fn load(path: &Path, required: bool) -> Result<Self, Error> {
+        let Some(config) = load_toml::<Self>(path, required)? else {
+            tracing::info!(path = %path.display(), "no config file, using defaults");
+            return Ok(Self::default());
+        };
+        for key in config.unknown_module_keys() {
+            tracing::warn!(path = %path.display(), %key, "unknown config key ignored");
         }
+        Ok(config)
+    }
+
+    /// Keys in module tables that no module reads (they would otherwise be
+    /// swallowed by the flattened event handlers).
+    fn unknown_module_keys(&self) -> Vec<String> {
+        let mut tables: Vec<(String, Option<&Events>)> = vec![
+            (
+                "keyboard".into(),
+                self.keyboard.as_ref().and_then(|m| m.events.as_ref()),
+            ),
+            (
+                "clock".into(),
+                self.clock.as_ref().and_then(|m| m.events.as_ref()),
+            ),
+            (
+                "workspaces".into(),
+                self.workspaces.as_ref().and_then(|m| m.events.as_ref()),
+            ),
+            (
+                "window".into(),
+                self.window.as_ref().and_then(|m| m.events.as_ref()),
+            ),
+            (
+                "mpris".into(),
+                self.mpris.as_ref().and_then(|m| m.events.as_ref()),
+            ),
+            (
+                "tray".into(),
+                self.tray.as_ref().and_then(|m| m.events.as_ref()),
+            ),
+        ];
+        for custom in self.modules.iter().flat_map(|m| m.custom.iter().flatten()) {
+            tables.push((
+                format!("modules.custom.{}", custom.name),
+                custom.events.as_ref(),
+            ));
+        }
+        tables
+            .into_iter()
+            .flat_map(|(table, events)| {
+                events
+                    .into_iter()
+                    .flat_map(|e| e.unknown.keys())
+                    .map(move |key| format!("{table}.{key}"))
+            })
+            .collect()
+    }
+}
+
+/// Read and parse a TOML file, warning about keys nothing reads.
+///
+/// `Ok(None)` when the file does not exist and is not `required`.
+pub(crate) fn load_toml<T: DeserializeOwned>(
+    path: &Path,
+    required: bool,
+) -> Result<Option<T>, Error> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => return Ok(None),
+        Err(source) => {
+            return Err(Error::Read {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let (value, unknown) = parse_toml(&raw).map_err(|source| Error::Invalid {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    for key in unknown {
+        tracing::warn!(path = %path.display(), %key, "unknown key ignored");
+    }
+    Ok(Some(value))
+}
+
+/// Parse TOML, also returning the keys that nothing read.
+pub(crate) fn parse_toml<T: DeserializeOwned>(
+    raw: &str,
+) -> Result<(T, Vec<String>), toml::de::Error> {
+    let mut unknown = Vec::new();
+    let value = serde_ignored::deserialize(toml::Deserializer::parse(raw)?, |key| {
+        unknown.push(key_path(&key));
+    })?;
+    Ok((value, unknown))
+}
+
+/// `base.font_sizee`, `modules.custom[0].x`: the key as written in the file.
+fn key_path(path: &serde_ignored::Path<'_>) -> String {
+    use serde_ignored::Path;
+    match path {
+        Path::Root => String::new(),
+        Path::Seq { parent, index } => format!("{}[{index}]", key_path(parent)),
+        Path::Map { parent, key } => match key_path(parent) {
+            p if p.is_empty() => key.clone(),
+            p => format!("{p}.{key}"),
+        },
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => key_path(parent),
     }
 }
 

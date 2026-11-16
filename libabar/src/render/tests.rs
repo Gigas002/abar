@@ -231,3 +231,20 @@ fn font_description_strips_style_and_size() {
     assert!(FontContext::new("Nonexistent Family Bold Italic 12", 12.0).is_ok());
     assert!(FontContext::new("", 12.0).is_err());
 }
+
+#[test]
+fn text_with_newlines_stays_one_line_high() {
+    let font = FontContext::new("sans-serif", 14.0).expect("font");
+    let (_, one) = font.measure("line one");
+    for text in [
+        "line one\nline two",
+        "tab\there",
+        "esc\u{1b}[31m",
+        "c1\u{85}next",
+    ] {
+        assert_eq!(font.measure(text).1, one, "{text:?}");
+    }
+    // Entities in markup can produce a newline too.
+    assert_eq!(font.measure_markup("<b>a</b>&#10;<i>b</i>").1, one);
+    assert_eq!(super::font::single_line("a\nb\u{85}c"), "a b\u{a0}c");
+}

@@ -239,6 +239,11 @@ pub fn compute_bar(
     )
 }
 
+/// Space between the icon and the label of an [`DisplayMode::IconText`] segment.
+pub(crate) fn icon_text_gap(style: &BarStyle) -> f64 {
+    (style.font_size / 3.0).round()
+}
+
 fn measure_island(
     island: &Island,
     style: &BarStyle,
@@ -271,6 +276,10 @@ fn measure_island(
         let (w, h) = match seg.display_mode {
             DisplayMode::TextOnly => measure(&seg.label, seg.use_markup),
             DisplayMode::IconOnly => (style.font_size, icon_h),
+            DisplayMode::IconText => {
+                let (w, h) = measure(&seg.label, seg.use_markup);
+                (style.font_size + icon_text_gap(style) + w, h)
+            }
         };
         max_h = max_h.max(h);
         segment_widths.push(w);

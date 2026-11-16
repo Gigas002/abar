@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 mod app;
 mod cli;
 mod config;
@@ -19,7 +21,13 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let config_path = cli.config.clone().unwrap_or_else(default_config_path);
-    let config = Config::load(&config_path);
+    let config = match Config::load(&config_path, cli.config.is_some()) {
+        Ok(config) => config,
+        Err(err) => {
+            tracing::error!(%err, "cannot load the config");
+            return ExitCode::from(1);
+        }
+    };
 
     let theme_name = config
         .base
@@ -30,7 +38,16 @@ fn main() -> ExitCode {
         .theme
         .clone()
         .unwrap_or_else(|| theme::resolve_path(&config_path, theme_name));
-    let theme = Theme::load(&theme_path);
+    // The theme must exist when it was named on the command line or in a config file.
+    let theme_named = cli.theme.is_some()
+        || (config_path.is_file() && config.base.as_ref().is_some_and(|b| b.theme.is_some()));
+    let theme = match Theme::load(&theme_path, theme_named) {
+        Ok(theme) => theme,
+        Err(err) => {
+            tracing::error!(%err, "cannot load the theme");
+            return ExitCode::from(1);
+        }
+    };
 
     let settings = match settings::Settings::resolve(&cli, config, theme) {
         Ok(s) => s,

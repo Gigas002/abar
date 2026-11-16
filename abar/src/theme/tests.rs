@@ -101,7 +101,7 @@ fn load_missing_theme_returns_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("theme.toml");
     // `path` does not exist — dir only creates the directory, not the file.
-    let t = Theme::load(&path);
+    let t = Theme::load(&path, false).unwrap();
     let base = t.base.unwrap();
     assert_eq!(base.background_color.as_deref(), Some("#000000FF"));
     assert_eq!(base.foreground_color.as_deref(), Some("#FFFFFFFF"));

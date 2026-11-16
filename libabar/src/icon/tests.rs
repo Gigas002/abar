@@ -289,3 +289,50 @@ mod svg_tests {
         assert!(surface.is_some());
     }
 }
+
+#[test]
+fn relative_names_with_paths_are_rejected() {
+    let (_dir, base) = fixture_theme_dir();
+    let dirs = vec![base.join("hicolor/48x48/apps/sub")];
+    std::fs::create_dir_all(&dirs[0]).unwrap();
+    // `../test-icon` from a search dir would reach a real file.
+    for name in ["../test-icon", "hicolor/48x48/apps/test-icon", ".hidden"] {
+        assert!(
+            resolve_icon(name, 48, &dirs, "hicolor", IconLookupMode::Exact).is_none(),
+            "{name}"
+        );
+    }
+    let absolute = base.join("hicolor/48x48/apps/test-icon.png");
+    let absolute = absolute.to_str().unwrap();
+    assert!(resolve_icon(absolute, 48, &dirs, "hicolor", IconLookupMode::Exact).is_some());
+}
+
+#[test]
+fn a_missing_icon_is_found_once_it_appears() {
+    let (dir, base) = fixture_theme_dir();
+    let path = dir.path().join("late-icon.png");
+    let name = path.to_str().unwrap().to_string();
+    let mut cache = IconCache::with_dirs(vec![base], "hicolor");
+    assert!(cache.get(&name, 24).is_none());
+    write_test_png(&path, 24);
+    assert!(
+        cache.get(&name, 24).is_none(),
+        "misses are cached for a while"
+    );
+    cache.age_misses();
+    assert!(cache.get(&name, 24).is_some());
+}
+
+#[test]
+fn the_cache_stays_bounded() {
+    let (dir, base) = fixture_theme_dir();
+    let mut cache = IconCache::with_dirs(vec![base], "hicolor");
+    assert!(cache.get("test-icon", 24).is_some());
+    for n in 0..1000 {
+        let name = dir.path().join(format!("tmp-icon-{n}.png"));
+        cache.get(name.to_str().unwrap(), 24);
+        // The icon in use keeps being drawn.
+        assert!(cache.get("test-icon", 24).is_some());
+    }
+    assert!(cache.len() <= 256, "{}", cache.len());
+}

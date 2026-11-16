@@ -7,8 +7,6 @@ use libabar::{
 use crate::cli::Cli;
 use crate::config::{self, Base as ConfigBase, Config};
 use crate::error::Error;
-#[cfg(feature = "workspaces")]
-use crate::theme::Workspaces as ThemeWorkspaces;
 use crate::theme::{Base as ThemeBase, Theme};
 
 #[derive(Debug)]
@@ -49,12 +47,11 @@ impl Settings {
         let font_size = config_base
             .font_size
             .unwrap_or_else(|| ConfigBase::default().font_size.unwrap());
+        if !(font_size.is_finite() && font_size > 0.0 && font_size <= 512.0) {
+            return Err(Error::FontSize(font_size));
+        }
 
         apply_icon_fallbacks(&mut layout, font_size);
-
-        // Enable Pango markup on workspaces segments when theme colors are configured.
-        #[cfg(feature = "workspaces")]
-        apply_markup_for_workspaces(&mut layout, theme.workspaces.as_ref());
 
         // Build module configs and set live initial labels on the matching segments.
         let module_configs = build_module_configs(&config, &theme, &mut layout);
@@ -270,27 +267,6 @@ fn set_segment_label(layout: &mut BarLayout, module_id: &str, label: &str) {
 
 /// Enable Pango markup on workspaces segments when the theme provides `active_color` or
 /// `inactive_color`.  Must run before `build_module_configs` sets the initial label.
-#[cfg(feature = "workspaces")]
-fn apply_markup_for_workspaces(layout: &mut BarLayout, theme_ws: Option<&ThemeWorkspaces>) {
-    let has_colors =
-        theme_ws.is_some_and(|w| w.active_color.is_some() || w.inactive_color.is_some());
-    if !has_colors {
-        return;
-    }
-    for island in layout
-        .left
-        .iter_mut()
-        .chain(layout.center.iter_mut())
-        .chain(layout.right.iter_mut())
-    {
-        for seg in &mut island.segments {
-            if seg.module_id == "workspaces" {
-                seg.use_markup = true;
-            }
-        }
-    }
-}
-
 /// For every icon-only segment whose icon cannot be resolved, switch it to text mode so the
 /// module name is displayed instead. Runs once at startup before the bar spec is finalized.
 fn apply_icon_fallbacks(layout: &mut BarLayout, font_size: f64) {

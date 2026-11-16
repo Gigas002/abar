@@ -5,4 +5,6 @@ ratatui = "ratatui"
 [default]
 extend-ignore-re = [
   "#[0-9a-fA-F]{6,8}",
+  # Git commit hashes (docs/AUDIT.md cites the fixing commits).
+  "\\b[0-9a-f]{7,40}\\b",
 ]

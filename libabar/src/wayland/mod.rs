@@ -1,11 +1,7 @@
 use std::io::Read;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-#[cfg(feature = "clock")]
 use std::sync::Arc;
-#[cfg(feature = "clock")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
 use wayland_client::protocol::wl_keyboard;
 
 use rustix::event::{PollFd, PollFlags, poll};
@@ -16,6 +12,12 @@ use wayland_client::protocol::{
     wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup::{self, XdgPopup},
+    xdg_positioner::{Anchor as PopupAnchor, ConstraintAdjustment, Gravity},
+    xdg_surface::{self, XdgSurface},
+    xdg_wm_base::{self, XdgWmBase},
+};
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
@@ -25,8 +27,8 @@ use crate::error::AbarError;
 use crate::icon::IconCache;
 use crate::input::{self, PointerAction};
 use crate::layout::{ComputedBar, compute_bar};
-use crate::model::BarSpec;
-use crate::modules::{ModuleConfigs, ModuleUpdate};
+use crate::model::{BarSpec, DisplayMode};
+use crate::modules::{Mailbox, ModuleConfigs, ModuleUpdate};
 use crate::render::{FontContext, paint_computed};
 use crate::spawn;
 
@@ -34,21 +36,29 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 
-/// Blocks until the layer surface is closed or an unrecoverable error occurs.
+/// Blocks until the layer surface is closed, `SIGTERM`/`SIGINT`/`SIGHUP`
+/// arrives, or an unrecoverable error occurs. Exec scripts are stopped on
+/// every one of these paths.
 pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
-    spawn::ensure_runtime()?;
+    struct StopScripts;
+    impl Drop for StopScripts {
+        fn drop(&mut self) {
+            crate::exec::stop_scripts();
+        }
+    }
+    let _stop_scripts = StopScripts;
 
-    let (updates_tx, updates_rx) = mpsc::sync_channel::<ModuleUpdate>(64);
-    let (wakeup_rx, wakeup_tx) = UnixStream::pair().map_err(|source| AbarError::Io {
-        path: "/dev/null".into(),
+    let runtime = spawn::ensure_runtime()?;
+    // Read before the per-feature blocks below move fields out of it.
+    let _ = &modules;
+
+    let io_err = |source| AbarError::Io {
+        path: "wakeup socket".into(),
         source,
-    })?;
-    wakeup_rx
-        .set_nonblocking(true)
-        .map_err(|source| AbarError::Io {
-            path: "/dev/null".into(),
-            source,
-        })?;
+    };
+    let (wakeup_rx, wakeup_tx) = UnixStream::pair().map_err(io_err)?;
+    wakeup_rx.set_nonblocking(true).map_err(io_err)?;
+    let mailbox = Arc::new(Mailbox::new(wakeup_tx).map_err(io_err)?);
 
     let conn = Connection::connect_to_env()?;
     let display = conn.display();
@@ -69,6 +79,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         compositor: None,
         shm: None,
         layer_shell: None,
+        wm_base: None,
         seat: None,
         outputs: Vec::new(),
         bars: Vec::new(),
@@ -77,17 +88,9 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         submenu: None,
         icon_cache: IconCache::with_mode(icon_mode),
         font: None,
-        updates_tx: updates_tx.clone(),
-        updates_rx,
-        wakeup_rx,
+        mailbox: Arc::clone(&mailbox),
         #[cfg(feature = "clock")]
-        clock_tz_index: Arc::new(AtomicUsize::new(0)),
-        #[cfg(feature = "clock")]
-        clock_timezones: Vec::new(),
-        #[cfg(feature = "clock")]
-        clock_formats: Vec::new(),
-        #[cfg(feature = "tray")]
-        tray_rx: None,
+        clock: None,
         #[cfg(feature = "tray")]
         tray_events: crate::model::SegmentEvents::default(),
         #[cfg(feature = "tray")]
@@ -96,202 +99,113 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         tray_island: None,
     };
 
+    runtime.spawn(quit_on_signal(Arc::clone(&mailbox)));
+
     // Spawn clock background task.
     #[cfg(feature = "clock")]
     if let Some(clock_cfg) = modules.clock {
-        state.clock_timezones = clock_cfg.timezones.clone();
-        state.clock_formats = clock_cfg.formats.clone();
-        let tx = updates_tx.clone();
-        let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-            path: "/dev/null".into(),
-            source,
-        })?;
-        let tz_index = state.clock_tz_index.clone();
-        spawn::ensure_runtime()?.spawn(clock_task(tx, wakeup, clock_cfg, tz_index));
+        let clock = Arc::new(crate::modules::clock::ClockState::new(clock_cfg));
+        state.clock = Some(Arc::clone(&clock));
+        runtime.spawn(clock_task(Arc::clone(&mailbox), clock));
     }
 
-    // Spawn exec handler for keyboard if configured; initial label is already set in BarSpec.
+    // Exec-driven modules run only when they are on the bar.
+    let on_bar = |module: &str| {
+        let layout = &state.spec.layout;
+        layout
+            .left
+            .iter()
+            .chain(&layout.center)
+            .chain(&layout.right)
+            .flat_map(|island| &island.segments)
+            .any(|seg| seg.module_id == module)
+    };
+    let text_module = |module: &'static str, max_length: usize| {
+        let mailbox = Arc::clone(&mailbox);
+        move |line: crate::modules::ScriptLine| {
+            let mut update = ModuleUpdate::from_script(module, line);
+            if max_length > 0 {
+                update.text = crate::modules::truncate_title(&update.text, max_length);
+            }
+            mailbox.post(update);
+        }
+    };
+    let _ = &text_module;
+
     #[cfg(feature = "keyboard")]
-    if let Some(kb_cfg) = modules.keyboard
-        && let Some(cmd) = kb_cfg.exec
+    if let Some(cmd) = modules.keyboard.and_then(|k| k.exec)
+        && on_bar("keyboard")
     {
-        let has_keyboard = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "keyboard");
-        if has_keyboard {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::keyboard::KeyboardData,
-                _,
-            >(
-                "keyboard".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                |data| ModuleUpdate::text("keyboard", data.label),
-            ));
-        }
+        let mailbox = Arc::clone(&mailbox);
+        runtime.spawn(crate::exec::run_exec_handler(
+            "keyboard".into(),
+            cmd,
+            Vec::new(),
+            move |data: crate::modules::keyboard::KeyboardData| {
+                mailbox.post(ModuleUpdate::text("keyboard", data.label));
+            },
+        ));
     }
 
-    // Spawn exec handler for workspaces if configured.
     #[cfg(feature = "workspaces")]
-    if let Some(ws_cfg) = modules.workspaces
-        && let Some(cmd) = ws_cfg.exec
+    if let Some(cfg) = modules.workspaces
+        && let Some(cmd) = cfg.exec.clone()
+        && on_bar("workspaces")
     {
-        let has_workspaces = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "workspaces");
-        if has_workspaces {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::ScriptLine,
-                _,
-            >(
-                "workspaces".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                |line| ModuleUpdate::from_script("workspaces", line),
-            ));
-        }
+        let ws_env = cfg.env();
+        runtime.spawn(crate::exec::run_exec_handler(
+            "workspaces".into(),
+            cmd,
+            ws_env,
+            text_module("workspaces", 0),
+        ));
     }
 
-    // Spawn exec handler for window if configured.
     #[cfg(feature = "window")]
-    if let Some(window_cfg) = modules.window
-        && let Some(cmd) = window_cfg.exec
+    if let Some(cfg) = modules.window
+        && let Some(cmd) = cfg.exec
+        && on_bar("window")
     {
-        let max_length = window_cfg.max_length;
-        let has_window = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "window");
-        if has_window {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::ScriptLine,
-                _,
-            >(
-                "window".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                move |line| {
-                    let mut update = ModuleUpdate::from_script("window", line);
-                    if max_length > 0 {
-                        update.text =
-                            crate::modules::window::truncate_title(&update.text, max_length);
-                    }
-                    update
-                },
-            ));
-        }
+        runtime.spawn(crate::exec::run_exec_handler(
+            "window".into(),
+            cmd,
+            Vec::new(),
+            text_module("window", cfg.max_length),
+        ));
     }
 
-    // Spawn exec handler for mpris if configured.
     #[cfg(feature = "mpris")]
-    if let Some(mpris_cfg) = modules.mpris
-        && let Some(cmd) = mpris_cfg.exec
+    if let Some(cfg) = modules.mpris
+        && let Some(cmd) = cfg.exec
+        && on_bar("mpris")
     {
-        let max_length = mpris_cfg.max_length;
-        let has_mpris = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "mpris");
-        if has_mpris {
-            let tx = updates_tx.clone();
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::exec::run_exec_handler::<
-                crate::modules::ScriptLine,
-                _,
-            >(
-                "mpris".to_string(),
-                cmd,
-                tx,
-                wakeup,
-                move |line| {
-                    let mut update = ModuleUpdate::from_script("mpris", line);
-                    if max_length > 0 {
-                        update.text =
-                            crate::modules::window::truncate_title(&update.text, max_length);
-                    }
-                    update
-                },
-            ));
-        }
+        runtime.spawn(crate::exec::run_exec_handler(
+            "mpris".into(),
+            cmd,
+            Vec::new(),
+            text_module("mpris", cfg.max_length),
+        ));
     }
 
-    // Spawn exec handler for tray if configured.
     #[cfg(feature = "tray")]
     if let Some(tray_cfg) = modules.tray
-        && let Some(cmd) = tray_cfg.exec
+        && let Some(cmd) = tray_cfg.exec.clone()
+        && on_bar("tray")
     {
-        let has_tray = state
-            .spec
-            .layout
-            .left
-            .iter()
-            .chain(state.spec.layout.center.iter())
-            .chain(state.spec.layout.right.iter())
-            .flat_map(|island| island.segments.iter())
-            .any(|seg| seg.module_id == "tray");
-        if has_tray {
-            let (tray_tx, tray_rx) =
-                mpsc::sync_channel::<Vec<crate::modules::tray::ipc::MinimalTrayItem>>(16);
-            state.tray_rx = Some(tray_rx);
-            state.tray_events = tray_cfg.events.clone();
-            state.tray_feed_id = tray_cfg.feed_id;
-            let wakeup = wakeup_tx.try_clone().map_err(|source| AbarError::Io {
-                path: "/dev/null".into(),
-                source,
-            })?;
-            spawn::ensure_runtime()?.spawn(crate::modules::tray::run_tray_exec_handler(
-                cmd, tray_tx, wakeup,
-            ));
-        }
+        state.tray_events = tray_cfg.events.clone();
+        state.tray_feed_id = tray_cfg.feed_id;
+        let mailbox = Arc::clone(&mailbox);
+        runtime.spawn(crate::exec::run_exec_handler(
+            "tray".into(),
+            cmd,
+            Vec::new(),
+            move |items: Vec<crate::modules::tray::ipc::MinimalTrayItem>| mailbox.post_tray(items),
+        ));
     }
 
-    // Suppress unused-variable warning when no module features are active.
-    let _ = modules;
-    // All tasks that need the wakeup sender now hold their own clones; drop ours.
-    drop(wakeup_tx);
+    // Keep the bindings used when no module features are active.
+    let _ = (&on_bar, runtime);
+    drop(mailbox);
 
     loop {
         event_queue
@@ -302,28 +216,21 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
             .dispatch_pending(&mut state)
             .map_err(|e| AbarError::WaylandProtocol(format!("dispatch failed: {e}")))?;
 
-        // Apply any module label updates that arrived since the last loop iteration.
-        while let Ok(update) = state.updates_rx.try_recv() {
-            if let Err(e) = state.apply_update(update, &qh) {
-                warn!(error = %e, "module update repaint failed");
-            }
+        if state.mailbox.quit_requested() {
+            debug!("termination signal received");
+            state.running = false;
         }
 
-        // Apply any tray item list updates.
-        #[cfg(feature = "tray")]
-        loop {
-            let items = state.tray_rx.as_ref().and_then(|rx| rx.try_recv().ok());
-            let Some(items) = items else { break };
-            if let Err(e) = state.apply_tray_update(items, &qh) {
-                warn!(error = %e, "tray update repaint failed");
-            }
+        // Apply everything the background tasks posted, then repaint once.
+        if let Err(e) = state.apply_pending(&qh) {
+            warn!(error = %e, "module update repaint failed");
         }
 
         if !state.running {
             break;
         }
 
-        // Flush any surface commits queued by apply_update before blocking in poll;
+        // Flush any surface commits queued by apply_pending before blocking in poll;
         // without this the compositor would not see the updated buffer until the next
         // Wayland event (e.g. pointer motion) triggered another flush.
         event_queue
@@ -335,15 +242,10 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
             continue;
         };
 
-        let wayland_fd = read_guard.connection_fd();
-        // Copy the raw fd so we can borrow it independently of `state`.
-        let wakeup_raw = state.wakeup_rx.as_raw_fd();
-
-        // Poll the Wayland connection and the wakeup pipe; None = wait indefinitely.
+        // Poll the Wayland connection and the wakeup socket; None = wait indefinitely.
         let mut pollfds = [
-            PollFd::from_borrowed_fd(wayland_fd, PollFlags::IN),
-            // SAFETY: wakeup_rx is alive and valid for the duration of this poll call.
-            PollFd::from_borrowed_fd(unsafe { BorrowedFd::borrow_raw(wakeup_raw) }, PollFlags::IN),
+            PollFd::from_borrowed_fd(read_guard.connection_fd(), PollFlags::IN),
+            PollFd::new(&wakeup_rx, PollFlags::IN),
         ];
 
         match poll(&mut pollfds, None) {
@@ -356,18 +258,23 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
                 return Err(AbarError::WaylandProtocol(format!("poll: {e}")));
             }
         }
+        let wayland_ready = pollfds[0].revents().contains(PollFlags::IN);
 
-        // Drain the wakeup pipe so it doesn't stay readable forever.
-        if pollfds[1].revents().contains(PollFlags::IN) {
-            let mut buf = [0u8; 64];
-            let _ = state.wakeup_rx.read(&mut buf);
-        }
+        // Drain the wakeup socket so it doesn't stay readable forever.
+        let mut buf = [0u8; 256];
+        while matches!((&wakeup_rx).read(&mut buf), Ok(n) if n > 0) {}
 
-        if pollfds[0].revents().contains(PollFlags::IN) {
-            if let Err(e) = read_guard.read() {
-                return Err(AbarError::WaylandProtocol(format!(
-                    "read events failed: {e}"
-                )));
+        if wayland_ready {
+            match read_guard.read() {
+                Ok(_) => {}
+                // Readable without a complete message yet; read again later.
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => {
+                    return Err(AbarError::WaylandProtocol(format!(
+                        "read events failed: {e}"
+                    )));
+                }
             }
         } else {
             drop(read_guard);
@@ -377,31 +284,47 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     Ok(())
 }
 
+/// Ask the Wayland loop to stop on `SIGTERM`, `SIGINT` or `SIGHUP`.
+async fn quit_on_signal(mailbox: Arc<Mailbox>) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+        signal(SignalKind::hangup()),
+    ) else {
+        warn!("cannot listen for termination signals");
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+        _ = hup.recv() => {}
+    }
+    mailbox.request_quit();
+}
+
 // ---------------------------------------------------------------------------
 // Clock background task
 // ---------------------------------------------------------------------------
 
+/// Check the clock label every second and post it when it changes, so the
+/// bar wakes once a minute for `%H:%M` and every second only for formats
+/// that show seconds.
 #[cfg(feature = "clock")]
-async fn clock_task(
-    tx: mpsc::SyncSender<ModuleUpdate>,
-    mut wakeup: UnixStream,
-    config: crate::modules::clock::ClockConfig,
-    tz_index: Arc<AtomicUsize>,
-) {
-    use std::io::Write;
+async fn clock_task(mailbox: Arc<Mailbox>, clock: Arc<crate::modules::clock::ClockState>) {
     use tokio::time::{Duration, sleep};
 
+    let mut last = String::new();
     loop {
-        let ms = crate::modules::clock::ms_until_next_tick();
+        let ms = crate::modules::clock::ms_until_next_second();
         sleep(Duration::from_millis(ms)).await;
 
-        let idx = tz_index.load(Ordering::Relaxed);
-        let tz = config.timezones.get(idx).copied();
-        let fmt = config.formats.first().map_or("%H:%M", |s| s.as_str());
-        let label = crate::modules::clock::current_label(fmt, tz);
-
-        let _ = tx.try_send(ModuleUpdate::text("clock", label));
-        let _ = wakeup.write_all(&[0u8]);
+        let label = clock.label();
+        if label != last {
+            last.clone_from(&label);
+            mailbox.post(ModuleUpdate::text("clock", label));
+        }
     }
 }
 
@@ -416,9 +339,8 @@ struct PointerState {
     active_bar_output: Option<u32>,
     x: f64,
     y: f64,
-    // Set when an Axis event fires; cleared on Frame. Prevents the paired
-    // AxisDiscrete (which arrives after Axis) from double-counting the click.
-    had_axis: bool,
+    /// Vertical scroll collected over a pointer frame.
+    scroll: input::ScrollAccumulator,
     /// `(island_index, segment_index)` of the segment currently under the pointer.
     hovered: Option<(usize, usize)>,
     /// `(island_index, segment_index)` of the segment being pressed.
@@ -427,20 +349,24 @@ struct PointerState {
     on_submenu: bool,
     submenu_x: f64,
     submenu_y: f64,
+    /// Serial of the last button press, needed to grab a submenu popup.
+    button_serial: u32,
 }
 
+/// An open submenu: an `xdg_popup` on the bar with an explicit grab, so the
+/// compositor closes it (`popup_done`) when the user clicks anywhere else and
+/// gives it keyboard focus only while it is open.
 struct SubmenuState {
     surface: wl_surface::WlSurface,
-    layer_surface: ZwlrLayerSurfaceV1,
-    pool: Option<wl_shm_pool::WlShmPool>,
-    pool_file: Option<std::fs::File>,
+    xdg_surface: XdgSurface,
+    popup: XdgPopup,
+    /// The bar the menu belongs to; its keyboard focus is reset on close.
+    bar_idx: usize,
     buffer: Option<wl_buffer::WlBuffer>,
     items: Vec<crate::model::SubmenuItemConfig>,
     hovered: Option<usize>,
     item_height: f64,
     width: u32,
-    #[allow(dead_code)]
-    height: u32,
 }
 
 /// A bound Wayland output, tracked so a bar can be created/destroyed for it.
@@ -459,12 +385,21 @@ struct Bar {
     surface: wl_surface::WlSurface,
     layer_surface: ZwlrLayerSurfaceV1,
     pending_configure: Option<(u32, u32, u32)>,
+    /// The buffer last attached; released buffers destroy themselves.
     buffer: Option<wl_buffer::WlBuffer>,
-    pool: Option<wl_shm_pool::WlShmPool>,
-    pool_file: Option<std::fs::File>,
     bar_width: u32,
     bar_height: u32,
     computed: Option<ComputedBar>,
+}
+
+impl Bar {
+    fn destroy(self) {
+        self.layer_surface.destroy();
+        self.surface.destroy();
+        if let Some(buffer) = self.buffer {
+            buffer.destroy();
+        }
+    }
 }
 
 struct AppState {
@@ -473,6 +408,7 @@ struct AppState {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
+    wm_base: Option<XdgWmBase>,
     seat: Option<wl_seat::WlSeat>,
     /// Every currently bound output; used to spin up a `Bar` per monitor.
     outputs: Vec<OutputInfo>,
@@ -483,18 +419,10 @@ struct AppState {
     submenu: Option<SubmenuState>,
     icon_cache: IconCache,
     font: Option<FontContext>,
-    #[allow(dead_code)]
-    updates_tx: mpsc::SyncSender<ModuleUpdate>,
-    updates_rx: mpsc::Receiver<ModuleUpdate>,
-    wakeup_rx: UnixStream,
+    /// Updates posted by background tasks (exec scripts, clock).
+    mailbox: Arc<Mailbox>,
     #[cfg(feature = "clock")]
-    clock_tz_index: Arc<AtomicUsize>,
-    #[cfg(feature = "clock")]
-    clock_timezones: Vec<chrono_tz::Tz>,
-    #[cfg(feature = "clock")]
-    clock_formats: Vec<String>,
-    #[cfg(feature = "tray")]
-    tray_rx: Option<mpsc::Receiver<Vec<crate::modules::tray::ipc::MinimalTrayItem>>>,
+    clock: Option<Arc<crate::modules::clock::ClockState>>,
     #[cfg(feature = "tray")]
     tray_events: crate::model::SegmentEvents,
     #[cfg(feature = "tray")]
@@ -557,8 +485,6 @@ impl AppState {
                 layer_surface,
                 pending_configure: None,
                 buffer: None,
-                pool: None,
-                pool_file: None,
                 bar_width: 1,
                 bar_height: initial_height,
                 computed: None,
@@ -573,8 +499,7 @@ impl AppState {
 
         if let Some(idx) = self.bars.iter().position(|b| b.output_name == name) {
             let bar = self.bars.remove(idx);
-            bar.layer_surface.destroy();
-            bar.surface.destroy();
+            bar.destroy();
 
             if self.pointer.active_bar_output == Some(name) {
                 self.pointer.active_bar_output = None;
@@ -675,68 +600,70 @@ impl AppState {
             (w, h, item_h)
         };
 
-        let surface = {
-            let Some(compositor) = self.compositor.as_ref() else {
-                return;
-            };
-            compositor.create_surface(qh, ())
+        let (Some(compositor), Some(wm_base), Some(seat)) = (
+            self.compositor.as_ref(),
+            self.wm_base.as_ref(),
+            self.seat.as_ref(),
+        ) else {
+            warn!("compositor lacks xdg_wm_base or a seat; cannot open submenu");
+            return;
         };
+        let surface = compositor.create_surface(qh, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, qh, ());
 
-        let bar_output_name = self.bars[bar_idx].output_name;
-        let output = self
-            .outputs
-            .iter()
-            .find(|o| o.name == bar_output_name)
-            .map(|o| &o.output);
+        // Below the segment, left edges aligned; the compositor slides it
+        // back on screen when it would overflow the output.
+        let bar = &self.bars[bar_idx];
+        let positioner = wm_base.create_positioner(qh, ());
+        positioner.set_size(width as i32, height as i32);
+        positioner.set_anchor_rect(
+            seg_x.floor() as i32,
+            0,
+            ((seg_right - seg_x).ceil() as i32).max(1),
+            bar.bar_height as i32,
+        );
+        positioner.set_anchor(PopupAnchor::BottomLeft);
+        positioner.set_gravity(Gravity::BottomRight);
+        positioner
+            .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY);
 
-        let layer_surface = {
-            let Some(layer_shell) = self.layer_shell.as_ref() else {
-                return;
-            };
-            layer_shell.get_layer_surface(
-                &surface,
-                output,
-                Layer::Overlay,
-                "abar-submenu".to_string(),
-                qh,
-                true,
-            )
-        };
-
-        // Always anchor Top|Left. For the normal case align the submenu's left edge with
-        // the segment's left edge. If that would overflow the right edge of the output,
-        // shift left so the submenu's right edge aligns with the segment's right edge instead.
-        let bar_w = self.bars[bar_idx].bar_width as f64;
-        let left_margin = if seg_x + width as f64 <= bar_w {
-            seg_x
-        } else {
-            (seg_right - width as f64).max(0.0)
-        };
-
-        layer_surface.set_anchor(Anchor::Top | Anchor::Left);
-        layer_surface.set_margin(0, 0, 0, left_margin as i32);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-        layer_surface.set_size(width, height);
+        let popup = xdg_surface.get_popup(None, &positioner, qh, ());
+        // Take keyboard focus (for Esc) only while the menu is open. The grab
+        // ends on any click elsewhere, which also gives focus back.
+        bar.layer_surface
+            .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        bar.surface.commit();
+        bar.layer_surface.get_popup(&popup);
+        popup.grab(seat, self.pointer.button_serial);
+        positioner.destroy();
         surface.commit();
 
         self.submenu = Some(SubmenuState {
             surface,
-            layer_surface,
-            pool: None,
-            pool_file: None,
+            xdg_surface,
+            popup,
+            bar_idx,
             buffer: None,
             items,
             hovered: None,
             item_height,
             width,
-            height,
         });
     }
 
     fn close_submenu(&mut self, _qh: &QueueHandle<Self>) {
         if let Some(sm) = self.submenu.take() {
-            sm.layer_surface.destroy();
+            if let Some(bar) = self.bars.get(sm.bar_idx) {
+                bar.layer_surface
+                    .set_keyboard_interactivity(KeyboardInteractivity::None);
+                bar.surface.commit();
+            }
+            sm.popup.destroy();
+            sm.xdg_surface.destroy();
             sm.surface.destroy();
+            if let Some(buffer) = sm.buffer {
+                buffer.destroy();
+            }
         }
         self.pointer.on_submenu = false;
     }
@@ -762,53 +689,12 @@ impl AppState {
             font,
         )?;
 
-        let stride = frame.stride;
-        let buf_h = frame.height;
-        let size = (stride as u64)
-            .checked_mul(buf_h as u64)
-            .ok_or_else(|| AbarError::WaylandProtocol("submenu buffer size overflow".into()))?;
-
-        {
-            let sm = self.submenu.as_mut().unwrap();
-            sm.buffer = None;
-            sm.pool = None;
-            sm.pool_file = None;
-        }
-
-        let mut file = tempfile::tempfile_in("/dev/shm").map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        use std::io::Write;
-        file.write_all(&frame.data)
-            .map_err(|source| AbarError::Io {
-                path: std::path::PathBuf::from("/dev/shm"),
-                source,
-            })?;
-        file.flush().map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            frame.width as i32,
-            buf_h as i32,
-            stride,
-            wl_shm::Format::Argb8888,
-            qh,
-            (),
-        );
-
+        let buffer = shm_buffer(&shm, &frame, qh)?;
         let sm = self.submenu.as_mut().unwrap();
         sm.surface.attach(Some(&buffer), 0, 0);
         sm.surface
-            .damage_buffer(0, 0, frame.width as i32, buf_h as i32);
+            .damage_buffer(0, 0, frame.width as i32, frame.height as i32);
         sm.surface.commit();
-        sm.pool_file = Some(file);
-        sm.pool = Some(pool);
         sm.buffer = Some(buffer);
 
         Ok(())
@@ -849,30 +735,25 @@ impl AppState {
         let x = self.pointer.x;
         let y = self.pointer.y;
 
+        // On the clock, scrolling cycles timezones and a right click cycles
+        // formats (when more than one is configured).
         #[cfg(feature = "clock")]
-        if matches!(action, PointerAction::ScrollUp | PointerAction::ScrollDown)
-            && self.clock_timezones.len() > 1
-        {
+        if let Some(clock) = self.clock.clone() {
             let clock_hit = {
                 let computed = self.bars[bar_idx].computed.as_ref().unwrap();
                 crate::hit_test::hit_test(computed, x, y).is_some_and(|s| s.module_id == "clock")
             };
-            if clock_hit {
-                let n = self.clock_timezones.len();
-                let cur = self.clock_tz_index.load(Ordering::Relaxed);
-                let next = if action == PointerAction::ScrollUp {
-                    cur.checked_sub(1).unwrap_or(n - 1)
-                } else {
-                    (cur + 1) % n
+            let cycled = clock_hit
+                && match action {
+                    PointerAction::ScrollUp => clock.cycle_timezone(false),
+                    PointerAction::ScrollDown => clock.cycle_timezone(true),
+                    PointerAction::RightClick => clock.cycle_format(),
+                    _ => false,
                 };
-                self.clock_tz_index.store(next, Ordering::Relaxed);
-                let label = {
-                    let tz = self.clock_timezones[next];
-                    let fmt = self.clock_formats.first().map_or("%H:%M", |s| s.as_str());
-                    crate::modules::clock::current_label(fmt, Some(tz))
-                };
-                if let Err(e) = self.apply_update(ModuleUpdate::text("clock", label), qh) {
-                    warn!(error = %e, "clock tz update repaint failed");
+            if cycled {
+                self.set_module(ModuleUpdate::text("clock", clock.label()));
+                if let Err(e) = self.repaint_all_bars(qh) {
+                    warn!(error = %e, "clock update repaint failed");
                 }
                 return;
             }
@@ -942,12 +823,25 @@ impl AppState {
         Ok(())
     }
 
-    /// Update a segment label and repaint. No-op if the bar hasn't been painted yet.
-    fn apply_update(
-        &mut self,
-        update: ModuleUpdate,
-        qh: &QueueHandle<Self>,
-    ) -> Result<(), AbarError> {
+    /// Apply everything waiting in the mailbox and repaint once if anything changed.
+    fn apply_pending(&mut self, qh: &QueueHandle<Self>) -> Result<(), AbarError> {
+        let pending = self.mailbox.take();
+        let mut changed = false;
+        for update in pending.modules {
+            changed |= self.set_module(update);
+        }
+        #[cfg(feature = "tray")]
+        if let Some(items) = pending.tray {
+            changed |= self.set_tray(items);
+        }
+        if changed {
+            self.repaint_all_bars(qh)?;
+        }
+        Ok(())
+    }
+
+    /// Store a module's new label; `false` when nothing visible changed.
+    fn set_module(&mut self, update: ModuleUpdate) -> bool {
         let found = self
             .spec
             .layout
@@ -959,22 +853,36 @@ impl AppState {
             .find(|seg| seg.module_id == update.module_id);
 
         let Some(seg) = found else {
-            return Ok(());
+            return false;
         };
+        // A script's `icon` is shown when it can be found; otherwise only the text.
+        let size = self.spec.style.font_size.round() as u32;
+        let icon = update
+            .icon
+            .filter(|name| self.icon_cache.get(name, size).is_some());
+        let mode = match (&icon, update.text.is_empty()) {
+            (None, _) => DisplayMode::TextOnly,
+            (Some(_), true) => DisplayMode::IconOnly,
+            (Some(_), false) => DisplayMode::IconText,
+        };
+        if seg.label == update.text
+            && seg.use_markup == update.use_markup
+            && seg.icon_name == icon
+            && seg.display_mode == mode
+        {
+            return false;
+        }
         seg.label = update.text;
         seg.use_markup = update.use_markup;
-
-        self.repaint_all_bars(qh)
+        seg.icon_name = icon;
+        seg.display_mode = mode;
+        true
     }
 
-    /// Replace tray segments in the layout with one icon-only segment per visible item,
-    /// then repaint. No-op if the bar hasn't been painted yet or no tray slot exists.
+    /// Replace tray segments in the layout with one icon-only segment per visible item;
+    /// `false` when nothing visible changed or no tray slot exists.
     #[cfg(feature = "tray")]
-    fn apply_tray_update(
-        &mut self,
-        items: Vec<crate::modules::tray::ipc::MinimalTrayItem>,
-        qh: &QueueHandle<Self>,
-    ) -> Result<(), AbarError> {
+    fn set_tray(&mut self, items: Vec<crate::modules::tray::ipc::MinimalTrayItem>) -> bool {
         use crate::model::Segment;
         use crate::modules::tray::ipc::TrayItemStatus;
 
@@ -1021,7 +929,8 @@ impl AppState {
             };
             let mut events = tray_events.clone();
             if tray_feed_id {
-                let id = &i.app_id;
+                // The id comes from the app; quote it so it stays one argument.
+                let id = crate::modules::tray::ipc::shell_quote(&i.app_id);
                 let append = |opt: Option<String>| opt.map(|cmd| format!("{cmd} {id}"));
                 events.on_left_click = append(events.on_left_click);
                 events.on_right_click = append(events.on_right_click);
@@ -1078,7 +987,7 @@ impl AppState {
         } else if let Some(cached) = self.tray_island {
             cached
         } else {
-            return Ok(());
+            return false;
         };
 
         // Splice the new segments into the island at the cached tray position.
@@ -1093,11 +1002,14 @@ impl AppState {
             .iter()
             .filter(|s| s.module_id == "tray" || s.module_id.starts_with("tray:"))
             .count();
+        let old = &island.segments[tray_start..tray_start + tray_count];
+        if old == new_segs.as_slice() {
+            return false;
+        }
         island
             .segments
             .splice(tray_start..tray_start + tray_count, new_segs);
-
-        self.repaint_all_bars(qh)
+        true
     }
 
     /// Repaint every bar that has already been configured/painted at least once,
@@ -1170,55 +1082,53 @@ impl AppState {
         bar.layer_surface.set_exclusive_zone(frame.height as i32);
         bar.layer_surface.set_size(0, frame.height);
 
-        let stride = frame.stride;
-        let buf_h = frame.height;
-        let size = (stride as u64)
-            .checked_mul(buf_h as u64)
-            .ok_or_else(|| AbarError::WaylandProtocol("buffer size overflow".into()))?;
-
-        bar.buffer.take();
-        bar.pool.take();
-        bar.pool_file.take();
-
-        let mut file = tempfile::tempfile_in("/dev/shm").map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        use std::io::Write;
-        file.write_all(&frame.data)
-            .map_err(|source| AbarError::Io {
-                path: std::path::PathBuf::from("/dev/shm"),
-                source,
-            })?;
-        file.flush().map_err(|source| AbarError::Io {
-            path: std::path::PathBuf::from("/dev/shm"),
-            source,
-        })?;
-
-        let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            width as i32,
-            buf_h as i32,
-            stride,
-            wl_shm::Format::Argb8888,
-            qh,
-            (),
-        );
-
+        let buffer = shm_buffer(shm, &frame, qh)?;
         let bar = &mut self.bars[bar_idx];
         bar.surface.attach(Some(&buffer), 0, 0);
-        bar.surface.damage_buffer(0, 0, width as i32, buf_h as i32);
+        bar.surface
+            .damage_buffer(0, 0, width as i32, frame.height as i32);
         bar.surface.commit();
-
-        bar.pool_file = Some(file);
-        bar.pool = Some(pool);
         bar.buffer = Some(buffer);
 
         let _ = height;
         Ok(())
     }
+}
+
+/// Copy `frame` into a fresh shared-memory buffer.
+///
+/// The pool is destroyed right away (the compositor keeps the memory alive for
+/// as long as the buffer exists), and the buffer destroys itself when the
+/// compositor releases it (see the `wl_buffer` dispatch), so nothing piles up
+/// on the compositor side however often the bar repaints.
+fn shm_buffer(
+    shm: &wl_shm::WlShm,
+    frame: &crate::render::Frame,
+    qh: &QueueHandle<AppState>,
+) -> Result<wl_buffer::WlBuffer, AbarError> {
+    use std::io::Write;
+
+    let shm_err = |source| AbarError::Io {
+        path: std::path::PathBuf::from("/dev/shm"),
+        source,
+    };
+    let size = i32::try_from(frame.data.len())
+        .map_err(|_| AbarError::WaylandProtocol("buffer size overflow".into()))?;
+    let mut file = tempfile::tempfile_in("/dev/shm").map_err(shm_err)?;
+    file.write_all(&frame.data).map_err(shm_err)?;
+
+    let pool = shm.create_pool(file.as_fd(), size, qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        frame.width as i32,
+        frame.height as i32,
+        frame.stride,
+        wl_shm::Format::Argb8888,
+        qh,
+        (),
+    );
+    pool.destroy();
+    Ok(buffer)
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,6 +1168,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         state.running = false;
                     }
                 }
+                "xdg_wm_base" => {
+                    state.wm_base =
+                        Some(registry.bind::<XdgWmBase, _, _>(name, 3.min(version), qh, ()));
+                }
                 "zwlr_layer_shell_v1" => {
                     let shell =
                         registry.bind::<ZwlrLayerShellV1, _, _>(name, 4.min(version), qh, ());
@@ -1265,7 +1179,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.create_bars_for_new_outputs(qh);
                 }
                 "wl_seat" => {
-                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 7.min(version), qh, ());
+                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 8.min(version), qh, ());
                     state.seat = Some(seat);
                 }
                 "wl_output" => {
@@ -1389,10 +1303,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 }
             }
             wl_pointer::Event::Button {
+                serial,
                 button,
                 state: btn_state,
                 ..
             } => {
+                if btn_state == WEnum::Value(ButtonState::Pressed) {
+                    state.pointer.button_serial = serial;
+                }
                 if btn_state == WEnum::Value(ButtonState::Pressed) {
                     if state.pointer.on_submenu {
                         // Click inside submenu: run the hovered item's action then close.
@@ -1450,38 +1368,43 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                     }
                 }
             }
-            wl_pointer::Event::Axis { axis, value, .. } => {
-                if axis != WEnum::Value(Axis::VerticalScroll)
-                    || value == 0.0
-                    || state.pointer.had_axis
-                {
-                    return;
-                }
-                state.pointer.had_axis = true;
-                let action = if value < 0.0 {
-                    PointerAction::ScrollUp
-                } else {
-                    PointerAction::ScrollDown
-                };
-                state.dispatch_pointer_action(action, qh);
+            // Scroll events are collected per frame; one action runs per
+            // notch (or notch-sized touchpad distance), not per event.
+            wl_pointer::Event::Axis {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                value,
+                ..
+            } => {
+                state.pointer.scroll.axis(value);
             }
-            wl_pointer::Event::AxisDiscrete { axis, discrete, .. } => {
-                if state.pointer.had_axis {
-                    return;
-                }
-                if axis != WEnum::Value(Axis::VerticalScroll) || discrete == 0 {
-                    return;
-                }
-                state.pointer.had_axis = true;
-                let action = if discrete < 0 {
-                    PointerAction::ScrollUp
-                } else {
-                    PointerAction::ScrollDown
-                };
-                state.dispatch_pointer_action(action, qh);
+            wl_pointer::Event::AxisDiscrete {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                discrete,
+            } => {
+                state.pointer.scroll.discrete(discrete);
+            }
+            wl_pointer::Event::AxisValue120 {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                value120,
+            } => {
+                state.pointer.scroll.value120(value120);
+            }
+            wl_pointer::Event::AxisStop {
+                axis: WEnum::Value(Axis::VerticalScroll),
+                ..
+            } => {
+                state.pointer.scroll.stop();
             }
             wl_pointer::Event::Frame => {
-                state.pointer.had_axis = false;
+                let steps = state.pointer.scroll.frame();
+                let action = if steps < 0 {
+                    PointerAction::ScrollUp
+                } else {
+                    PointerAction::ScrollDown
+                };
+                for _ in 0..steps.unsigned_abs() {
+                    state.dispatch_pointer_action(action, qh);
+                }
             }
             _ => {}
         }
@@ -1517,8 +1440,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, u32> for AppState {
                 debug!(output_name, "layer surface closed");
                 if let Some(idx) = state.bars.iter().position(|b| b.output_name == output_name) {
                     let bar = state.bars.remove(idx);
-                    bar.layer_surface.destroy();
-                    bar.surface.destroy();
+                    bar.destroy();
                     if state.pointer.active_bar_output == Some(output_name) {
                         state.pointer.active_bar_output = None;
                         state.pointer.hovered = None;
@@ -1560,30 +1482,52 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
     }
 }
 
-/// Dispatch for the submenu layer surface (userdata = `true` distinguishes it from the bar).
-impl Dispatch<ZwlrLayerSurfaceV1, bool> for AppState {
+impl Dispatch<XdgWmBase, ()> for AppState {
+    fn event(
+        _: &mut Self,
+        wm_base: &XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<XdgSurface, ()> for AppState {
     fn event(
         state: &mut Self,
-        layer_surface: &ZwlrLayerSurfaceV1,
-        event: zwlr_layer_surface_v1::Event,
-        _: &bool,
+        xdg_surface: &XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        match event {
-            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
-                layer_surface.ack_configure(serial);
-                if let Err(e) = state.repaint_submenu(qh) {
-                    warn!(error = %e, "submenu configure repaint failed");
-                }
+        if let xdg_surface::Event::Configure { serial } = event {
+            xdg_surface.ack_configure(serial);
+            if let Err(e) = state.repaint_submenu(qh) {
+                warn!(error = %e, "submenu configure repaint failed");
             }
-            zwlr_layer_surface_v1::Event::Closed => {
-                debug!("submenu layer surface closed");
-                // Drop the state but don't call close_submenu (which would call destroy() again).
-                state.submenu = None;
-                state.pointer.on_submenu = false;
-            }
-            _ => {}
+        }
+    }
+}
+
+impl Dispatch<XdgPopup, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &XdgPopup,
+        event: xdg_popup::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        // The user clicked outside the menu (or the grab was refused).
+        if let xdg_popup::Event::PopupDone = event {
+            debug!("submenu dismissed");
+            state.close_submenu(qh);
         }
     }
 }
@@ -1592,8 +1536,35 @@ wayland_client::delegate_noop!(AppState: ignore wl_compositor::WlCompositor);
 wayland_client::delegate_noop!(AppState: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(AppState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(AppState: ignore wl_shm_pool::WlShmPool);
-wayland_client::delegate_noop!(AppState: ignore wl_buffer::WlBuffer);
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        buffer: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_buffer::Event::Release = event {
+            // Every buffer is attached once; when the compositor is done
+            // with it, nothing will use it again.
+            for slot in state
+                .bars
+                .iter_mut()
+                .map(|b| &mut b.buffer)
+                .chain(state.submenu.iter_mut().map(|sm| &mut sm.buffer))
+            {
+                if slot.as_ref() == Some(buffer) {
+                    *slot = None;
+                }
+            }
+            buffer.destroy();
+        }
+    }
+}
 wayland_client::delegate_noop!(AppState: ignore ZwlrLayerShellV1);
+wayland_client::delegate_noop!(AppState: ignore wayland_protocols::xdg::shell::client::xdg_positioner::XdgPositioner);
 wayland_client::delegate_noop!(AppState: ignore wl_output::WlOutput);
 
 #[cfg(test)]

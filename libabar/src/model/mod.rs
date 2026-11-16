@@ -43,6 +43,8 @@ pub enum DisplayMode {
     #[default]
     TextOnly,
     IconOnly,
+    /// The icon, then the label (set when an exec script sends both).
+    IconText,
 }
 
 /// One module segment inside a grouped island.

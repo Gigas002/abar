@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-homepage.workspace = true
+keywords.workspace = true
 description = "Wayland layer-shell bar runtime."
 
 [features]
@@ -21,16 +21,17 @@ svg = ["dep:resvg"]
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 chrono-tz = { version = "0.10", optional = true }
-rustix = { version = "1", features = ["event"] }
+rustix = { version = "1", features = ["event", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util", "net", "signal"] }
 tracing = "0.1"
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-vello_cpu = "0.3"
-parley = "0.12"
+vello_cpu = "0.4"
+parley = "0.13"
 
 tempfile = "3"
-resvg = { version = "0.49", optional = true }
+resvg = { version = "0.50", optional = true }
