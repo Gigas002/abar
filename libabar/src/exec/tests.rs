@@ -52,3 +52,21 @@ fn exec_handler_per_module_type() {
     let data: MyData = first_line(r#"echo 'not json'; echo; echo '{"label": "en-US"}'"#);
     assert_eq!(data.label, "en-US");
 }
+
+#[test]
+fn restart_delay_backs_off_and_recovers() {
+    use super::restart_delay;
+    let s = Duration::from_secs;
+    let quick = Duration::from_millis(50);
+    let mut delays = Vec::new();
+    let mut delay = None;
+    for _ in 0..7 {
+        let next = restart_delay(delay, quick);
+        delays.push(next.as_secs());
+        delay = Some(next);
+    }
+    assert_eq!(delays, [1, 2, 4, 8, 16, 30, 30]);
+    // After a long healthy run (e.g. trayd was up for hours) it is quick again.
+    assert_eq!(restart_delay(delay, s(3600)), s(1));
+    assert_eq!(restart_delay(Some(s(1)), quick), s(2));
+}
