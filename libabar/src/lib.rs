@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod color;
 pub mod error;
 pub mod exec;
