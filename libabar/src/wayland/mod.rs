@@ -2,8 +2,6 @@ use std::io::Read;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-#[cfg(feature = "clock")]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use wayland_client::protocol::wl_keyboard;
 
 use rustix::event::{PollFd, PollFlags, poll};
@@ -85,11 +83,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         font: None,
         mailbox: Arc::clone(&mailbox),
         #[cfg(feature = "clock")]
-        clock_tz_index: Arc::new(AtomicUsize::new(0)),
-        #[cfg(feature = "clock")]
-        clock_timezones: Vec::new(),
-        #[cfg(feature = "clock")]
-        clock_formats: Vec::new(),
+        clock: None,
         #[cfg(feature = "tray")]
         tray_events: crate::model::SegmentEvents::default(),
         #[cfg(feature = "tray")]
@@ -103,10 +97,9 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     // Spawn clock background task.
     #[cfg(feature = "clock")]
     if let Some(clock_cfg) = modules.clock {
-        state.clock_timezones = clock_cfg.timezones.clone();
-        state.clock_formats = clock_cfg.formats.clone();
-        let tz_index = state.clock_tz_index.clone();
-        runtime.spawn(clock_task(Arc::clone(&mailbox), clock_cfg, tz_index));
+        let clock = Arc::new(crate::modules::clock::ClockState::new(clock_cfg));
+        state.clock = Some(Arc::clone(&clock));
+        runtime.spawn(clock_task(Arc::clone(&mailbox), clock));
     }
 
     // Exec-driven modules run only when they are on the bar.
@@ -295,24 +288,23 @@ async fn quit_on_signal(mailbox: Arc<Mailbox>) {
 // Clock background task
 // ---------------------------------------------------------------------------
 
+/// Check the clock label every second and post it when it changes, so the
+/// bar wakes once a minute for `%H:%M` and every second only for formats
+/// that show seconds.
 #[cfg(feature = "clock")]
-async fn clock_task(
-    mailbox: Arc<Mailbox>,
-    config: crate::modules::clock::ClockConfig,
-    tz_index: Arc<AtomicUsize>,
-) {
+async fn clock_task(mailbox: Arc<Mailbox>, clock: Arc<crate::modules::clock::ClockState>) {
     use tokio::time::{Duration, sleep};
 
+    let mut last = String::new();
     loop {
-        let ms = crate::modules::clock::ms_until_next_tick();
+        let ms = crate::modules::clock::ms_until_next_second();
         sleep(Duration::from_millis(ms)).await;
 
-        let idx = tz_index.load(Ordering::Relaxed);
-        let tz = config.timezones.get(idx).copied();
-        let fmt = config.formats.first().map_or("%H:%M", |s| s.as_str());
-        let label = crate::modules::clock::current_label(fmt, tz);
-
-        mailbox.post(ModuleUpdate::text("clock", label));
+        let label = clock.label();
+        if label != last {
+            last.clone_from(&label);
+            mailbox.post(ModuleUpdate::text("clock", label));
+        }
     }
 }
 
@@ -403,11 +395,7 @@ struct AppState {
     /// Updates posted by background tasks (exec scripts, clock).
     mailbox: Arc<Mailbox>,
     #[cfg(feature = "clock")]
-    clock_tz_index: Arc<AtomicUsize>,
-    #[cfg(feature = "clock")]
-    clock_timezones: Vec<chrono_tz::Tz>,
-    #[cfg(feature = "clock")]
-    clock_formats: Vec<String>,
+    clock: Option<Arc<crate::modules::clock::ClockState>>,
     #[cfg(feature = "tray")]
     tray_events: crate::model::SegmentEvents,
     #[cfg(feature = "tray")]
@@ -719,31 +707,25 @@ impl AppState {
         let x = self.pointer.x;
         let y = self.pointer.y;
 
+        // On the clock, scrolling cycles timezones and a right click cycles
+        // formats (when more than one is configured).
         #[cfg(feature = "clock")]
-        if matches!(action, PointerAction::ScrollUp | PointerAction::ScrollDown)
-            && self.clock_timezones.len() > 1
-        {
+        if let Some(clock) = self.clock.clone() {
             let clock_hit = {
                 let computed = self.bars[bar_idx].computed.as_ref().unwrap();
                 crate::hit_test::hit_test(computed, x, y).is_some_and(|s| s.module_id == "clock")
             };
-            if clock_hit {
-                let n = self.clock_timezones.len();
-                let cur = self.clock_tz_index.load(Ordering::Relaxed);
-                let next = if action == PointerAction::ScrollUp {
-                    cur.checked_sub(1).unwrap_or(n - 1)
-                } else {
-                    (cur + 1) % n
+            let cycled = clock_hit
+                && match action {
+                    PointerAction::ScrollUp => clock.cycle_timezone(false),
+                    PointerAction::ScrollDown => clock.cycle_timezone(true),
+                    PointerAction::RightClick => clock.cycle_format(),
+                    _ => false,
                 };
-                self.clock_tz_index.store(next, Ordering::Relaxed);
-                let label = {
-                    let tz = self.clock_timezones[next];
-                    let fmt = self.clock_formats.first().map_or("%H:%M", |s| s.as_str());
-                    crate::modules::clock::current_label(fmt, Some(tz))
-                };
-                self.set_module(ModuleUpdate::text("clock", label));
+            if cycled {
+                self.set_module(ModuleUpdate::text("clock", clock.label()));
                 if let Err(e) = self.repaint_all_bars(qh) {
-                    warn!(error = %e, "clock tz update repaint failed");
+                    warn!(error = %e, "clock update repaint failed");
                 }
                 return;
             }
