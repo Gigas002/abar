@@ -25,6 +25,8 @@
   workspace label formatter (`format_label`, `workspace_at_x`, …) is removed.
 - Tray items with an unknown `status` are shown like `Active` instead of
   making the whole tray line unreadable.
+- Dependencies updated to their latest releases: `vello_cpu` 0.4, `parley`
+  0.13 and `resvg` 0.50 (rendered output is unchanged).
 
 - Rendering migrated from Cairo + Pango to `vello_cpu` (rasterization) and
   `parley` (text shaping/layout); the build no longer needs cairo, pango or
