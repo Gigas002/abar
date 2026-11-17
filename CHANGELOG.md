@@ -11,6 +11,20 @@
   `ABAR_WS_ACTIVE_COLOR`, `ABAR_WS_INACTIVE_COLOR` and `ABAR_WS_VISIBILITY`;
   the example scripts honour `visibility_mode = "monitor_specific"`.
 - Unknown config and theme keys are logged as warnings.
+- HiDPI: the bar and its popups are drawn at the output's scale, fractional
+  (`wp_fractional_scale_v1` + `wp_viewporter`) or integer (`wl_output.scale`),
+  instead of being upscaled and blurry.
+- Tooltips: resting the pointer on a segment for half a second shows its
+  tooltip — a tray item's (from trayd), a script line's new `tooltip`
+  field, or a custom module's `tooltip` key.
+- `[tray] app_icon_theme`: tray apps that ship their own icons
+  (`icon_theme_path`, trayd 0.3) are shown with them when your icon themes
+  have nothing (`"fallback"`, default), first (`"prefer"`) or never
+  (`"never"`).
+- The example configs bind middle click and the wheel on tray items to
+  `trayctl secondary-activate` and `trayctl scroll` (trayd 0.3).
+- Tests drive the Wayland event loop in a headless sway (CI installs sway
+  and grim).
 
 ### Changed
 
@@ -20,6 +34,10 @@
 - Logs go to stderr, coloured only when it is a terminal.
 - Submenus are `xdg_popup`s of the bar: they close on any click outside them
   and hold keyboard focus only while open.
+- libabar: `paint_computed` and `paint_submenu` take the scale to draw at;
+  `Segment`, `PlacedSegment`, `ScriptLine`, `ModuleUpdate`, `TrayConfig`
+  and `MinimalTrayItem` gain fields (tooltips, `app_icon_theme`,
+  `icon_theme_path`).
 - libabar: `run_exec_handler` takes the script environment and a delivery
   closure instead of channels; the tray's own reader is gone. The unused
   workspace label formatter (`format_label`, `workspace_at_x`, …) is removed.

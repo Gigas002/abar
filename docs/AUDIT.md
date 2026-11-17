@@ -98,15 +98,15 @@ the bar once a minute; formats with seconds once a second.
 
 ## 5. UI usability and design
 
-| Area           | Finding                                                                                                                                                        | Status          |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| Submenus       | Close on an outside click or Esc; placed under their segment, kept on screen by the compositor; keyboard focus only while open.                                | Fixed (c498778) |
-| Scrolling      | One notch, one step, on wheels, hi-res wheels and touchpads (§3).                                                                                              | Fixed (bfc51aa) |
-| Clock          | Right click cycles formats, scrolling cycles timezones; seconds tick.                                                                                          | Fixed (bf115b9) |
-| Script icons   | Icon + text segments (e.g. a player icon before the title).                                                                                                    | Fixed (4b4ae16) |
-| Error messages | A broken config names file, line and column instead of showing an empty bar; typos in keys are named.                                                          | Fixed (3ac193b) |
-| Logs           | Went to stdout with ANSI colours even into files; now stderr, coloured only on a terminal.                                                                     | Fixed (4f305bb) |
-| HiDPI          | Buffers are drawn at scale 1; on a scale-2 output the compositor upscales them (blurry text). The author's monitor is scale 1, so this could not be seen here. | Left open (§8)  |
+| Area           | Finding                                                                                                                                                                             | Status          |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Submenus       | Close on an outside click or Esc; placed under their segment, kept on screen by the compositor; keyboard focus only while open.                                                     | Fixed (c498778) |
+| Scrolling      | One notch, one step, on wheels, hi-res wheels and touchpads (§3).                                                                                                                   | Fixed (bfc51aa) |
+| Clock          | Right click cycles formats, scrolling cycles timezones; seconds tick.                                                                                                               | Fixed (bf115b9) |
+| Script icons   | Icon + text segments (e.g. a player icon before the title).                                                                                                                         | Fixed (4b4ae16) |
+| Error messages | A broken config names file, line and column instead of showing an empty bar; typos in keys are named.                                                                               | Fixed (3ac193b) |
+| Logs           | Went to stdout with ANSI colours even into files; now stderr, coloured only on a terminal.                                                                                          | Fixed (4f305bb) |
+| HiDPI          | Buffers were drawn at scale 1; on a scale-2 output the compositor upscaled them (blurry text). Now drawn at the output's scale, fractional or integer; tested in sway at 2 and 1.5. | Fixed (f546ef1) |
 
 ## 6. Code quality, tests and project hygiene
 
@@ -114,7 +114,7 @@ the bar once a minute; formats with seconds once a second.
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
 | Dead code | The workspaces label formatter, click-to-workspace hit testing and display state were never called (with their tests); the tray had its own copy of the exec reader. Removed.                                                                        | Fixed (e17fb59, af2f8db) |
 | Tests     | 101 → 115 tests: mailbox bursts, scroll accumulation, restart delay, process-group cleanup (own test binary), single-line text, clock cycling, icon+text layout, config errors and unknown keys (all shipped examples checked), quoting, icon cache. | Fixed                    |
-| Coverage  | 49.0% → 52.7% lines. `wayland/mod.rs` (the event loop, ~1100 lines) stays at 0%: it needs a compositor, and was covered by the live runs instead.                                                                                                    | Accepted                 |
+| Coverage  | 49.0% → 52.7% lines; then 67.5% once `abar/tests/live.rs` drove the event loop in a headless sway (`wayland/mod.rs` 0% → 62%), in CI too.                                                                                                            | Fixed (4926af0)          |
 | Gates     | fmt, typos, clippy `-D warnings` at three feature levels, tests, docs: all pass on every audit commit (checked one by one, §9).                                                                                                                      | OK                       |
 | Manifests | Cargo warned about `homepage` repeating `repository` and the unused `workspace.package.keywords`. `homepage` is gone; both crates inherit the keywords, trimmed to the 5 crates.io accepts (6 would fail to publish).                                | Fixed (f0e76cc)          |
 | Semver    | libabar's public API changed (`run_exec_handler`, `DisplayMode::IconText`, `TrayItemStatus::Unknown`, removed workspace helpers), so the crates go to 0.3.0.                                                                                         | Fixed                    |
@@ -122,30 +122,34 @@ the bar once a minute; formats with seconds once a second.
 
 ## 7. Features compared with other bars
 
-| Feature                                 | abar                                                          |
-| --------------------------------------- | ------------------------------------------------------------- |
-| One bar per output, hot-plug            | Yes                                                           |
-| Modules from scripts (JSON lines)       | Yes; text, Pango-style markup, icon (since 4b4ae16)           |
-| Clock with timezones and formats        | Yes (format cycling since bf115b9)                            |
-| Tray                                    | Via trayd + an exec script; menus through `trayctl` and dmenu |
-| Popup menus                             | Static submenus from config                                   |
-| Tooltips                                | No (trayd sends tooltip text; abar doesn't show it)           |
-| HiDPI / fractional scaling              | No                                                            |
-| Click/scroll per module, hover feedback | Yes                                                           |
-| Built-in modules (battery, network, …)  | No, by design: scripts                                        |
+| Feature                                 | abar                                                                                                                                         |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| One bar per output, hot-plug            | Yes                                                                                                                                          |
+| Modules from scripts (JSON lines)       | Yes; text, Pango-style markup, icon (since 4b4ae16)                                                                                          |
+| Clock with timezones and formats        | Yes (format cycling since bf115b9)                                                                                                           |
+| Tray                                    | Via trayd + an exec script; menus through `trayctl` and dmenu; middle click and wheel through `trayctl` (823d223); apps' own icons (ae0ce0f) |
+| Popup menus                             | Static submenus from config                                                                                                                  |
+| Tooltips                                | Yes (4d42afe): tray items, scripts, custom modules                                                                                           |
+| HiDPI / fractional scaling              | Yes (f546ef1)                                                                                                                                |
+| Click/scroll per module, hover feedback | Yes                                                                                                                                          |
+| Built-in modules (battery, network, …)  | No, by design: scripts                                                                                                                       |
 
 ## 8. Left open
 
 - **Release**: both crates are now 0.3.0 (libabar's API changed); set the date
   in CHANGELOG.md when tagging. Nothing was published or pushed. trayd's new
   version isn't released either; the tray was tested against the local build.
-- **HiDPI**: honour `wl_output.scale` / `wp_fractional_scale_v1` and draw at
-  the output's scale.
-- **Tooltips**: show the tray's (and scripts') tooltip text on hover.
+- ~~**HiDPI**~~: done (f546ef1). The integer fallback (no
+  `wp_fractional_scale_v1`) is not covered by the tests, as sway always
+  offers that protocol.
+- ~~**Tooltips**~~: done (4d42afe).
 - **CI**: the full `cargo deny check` job was not run on GitHub here; watch
   its first run.
-- **Event loop coverage**: `wayland/mod.rs` could be driven by tests against
-  a headless compositor in CI.
+- ~~**Event loop coverage**~~: done (4926af0). The CI job installs sway and
+  grim from Ubuntu; it has not run on GitHub yet.
+- **trayd 0.3**: tested end to end with the local build (private bus, fake
+  app, the example `tray.sh`): app icons, tooltips, activate, middle click,
+  scroll both ways, and the tray coming back after trayd restarts.
 
 ## 9. Re-running the audit
 
