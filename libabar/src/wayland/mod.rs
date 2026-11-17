@@ -96,6 +96,8 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         #[cfg(feature = "tray")]
         tray_feed_id: false,
         #[cfg(feature = "tray")]
+        tray_app_icon_theme: Default::default(),
+        #[cfg(feature = "tray")]
         tray_island: None,
     };
 
@@ -194,6 +196,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
     {
         state.tray_events = tray_cfg.events.clone();
         state.tray_feed_id = tray_cfg.feed_id;
+        state.tray_app_icon_theme = tray_cfg.app_icon_theme;
         let mailbox = Arc::clone(&mailbox);
         runtime.spawn(crate::exec::run_exec_handler(
             "tray".into(),
@@ -427,6 +430,8 @@ struct AppState {
     tray_events: crate::model::SegmentEvents,
     #[cfg(feature = "tray")]
     tray_feed_id: bool,
+    #[cfg(feature = "tray")]
+    tray_app_icon_theme: crate::modules::tray::AppIconTheme,
     /// Cached (zone_idx, island_idx, tray_start) from the last successful tray
     /// placement.  Preserved across empty-item updates so we can repopulate the
     /// tray after trayd restarts without losing the slot position.
@@ -887,33 +892,19 @@ impl AppState {
         use crate::modules::tray::ipc::TrayItemStatus;
 
         // Build one segment per visible item.
-        // Icon resolution order: icon_handle → tooltip_title (lowercased) → title (lowercased) → text fallback.
+        // Icon: see `choose_icon`; text when none is found.
         // Events from config; when feed_id is set, each configured on_* command gets ` <app_id>` appended.
         let size = self.spec.style.font_size.round() as u32;
         let tray_feed_id = self.tray_feed_id;
         let tray_events = self.tray_events.clone();
         let mut new_segs: Vec<Segment> = Vec::new();
         for i in items.iter().filter(|i| i.status != TrayItemStatus::Passive) {
-            // Prefer icon_handle; then try tooltip_title/title lowercased as icon names.
-            let icon_name = i
-                .icon_handle
-                .as_deref()
-                .and_then(|name| self.icon_cache.get(name, size).map(|_| name.to_string()))
-                .or_else(|| {
-                    // Try tooltip_title lowercased as a FreeDesktop icon name
-                    // (e.g. "Discord" → "discord" which exists in many icon themes).
-                    i.tooltip_title
-                        .as_deref()
-                        .map(|t| t.to_lowercase())
-                        .and_then(|name| self.icon_cache.get(&name, size).map(|_| name))
-                })
-                .or_else(|| {
-                    // Try title lowercased as a FreeDesktop icon name.
-                    i.title
-                        .as_deref()
-                        .map(|t| t.to_lowercase())
-                        .and_then(|name| self.icon_cache.get(&name, size).map(|_| name))
-                });
+            let icon_name = crate::modules::tray::choose_icon(
+                i,
+                size,
+                self.tray_app_icon_theme,
+                &mut self.icon_cache,
+            );
             let mut seg = match icon_name {
                 Some(name) => Segment::icon_only(format!("tray:{}", i.app_id), name),
                 None => {

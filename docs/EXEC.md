@@ -98,12 +98,17 @@ one SNI tray item:
 ]
 ```
 
-| Field         | Type           | Required | Description                                                                                                               |
-| ------------- | -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `app_id`      | string         | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`).                                                  |
-| `title`       | string \| null | no       | Human-readable name shown in fallback pickers.                                                                            |
-| `status`      | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered; any other value is shown like `Active`. |
-| `icon_handle` | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are skipped.                                                       |
+| Field                 | Type           | Required | Description                                                                                                               |
+| --------------------- | -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `app_id`              | string         | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`).                                                  |
+| `title`               | string \| null | no       | Human-readable name shown in fallback pickers.                                                                            |
+| `status`              | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered; any other value is shown like `Active`. |
+| `icon_handle`         | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are shown as text (tooltip title, title or `app_id`).              |
+| `tooltip_title`       | string \| null | no       | Also tried as an icon name, lowercased (`"Discord"` → `discord`).                                                         |
+| `tooltip_description` | string \| null | no       | Read, not shown yet.                                                                                                      |
+| `icon_theme_path`     | string \| null | no       | Directory of icons the app ships (SNI `IconThemePath`); see `app_icon_theme`.                                             |
+
+Other fields (trayd also sends `category`, `has_pixmap`, …) are ignored.
 
 Emit an empty array `[]` to clear the tray:
 
@@ -134,6 +139,20 @@ sh -c "~/.config/abar/scripts/tray/tray-menu.sh 'nm-applet'"
 
 See `examples/scripts/tray/tray-menu.sh` for a `tofi`-based picker that uses
 this to call `trayctl menu --app-id <app_id>` directly.
+
+### `app_icon_theme`
+
+Some apps ship their own icons and name the directory in `icon_theme_path`.
+`app_icon_theme` in `[tray]` decides whether abar looks there:
+
+| Value                  | Effect                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| `"fallback"` (default) | Only when nothing in your icon themes matches the icon name, tooltip title or title. |
+| `"prefer"`             | The app's icons first, then your icon themes.                                        |
+| `"never"`              | Never; such items show text when your themes lack the icon.                          |
+
+Inside the directory, abar looks for a theme named like yours, then
+`hicolor` (`<dir>/hicolor/22x22/apps/<name>.png`), then `<dir>/<name>.png`.
 
 ---
 

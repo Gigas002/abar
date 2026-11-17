@@ -116,4 +116,7 @@ exec = "~/.config/abar/scripts/tray/tray.sh"
 # When feed_id = true, each tray item's app_id is appended to every configured
 # on_* handler when tray segments update, e.g. `tray-menu.sh <app_id>`.
 feed_id = true
+# Icons apps ship: "fallback" (default; only when your icon theme has none),
+# "prefer" or "never".
+# app_icon_theme = "fallback"
 on_left_click = "~/.config/abar/scripts/tray/tray-menu.sh"

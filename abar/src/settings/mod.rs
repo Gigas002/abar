@@ -218,10 +218,17 @@ fn build_module_configs(
                     on_scroll_down: e.on_scroll_down.clone(),
                 })
                 .unwrap_or_default();
+            use crate::config::AppIconTheme as Cfg;
+            use libabar::modules::tray::AppIconTheme;
             TrayConfig {
                 exec: t.exec.clone(),
                 feed_id: t.feed_id,
                 events,
+                app_icon_theme: match t.app_icon_theme {
+                    Cfg::Fallback => AppIconTheme::Fallback,
+                    Cfg::Prefer => AppIconTheme::Prefer,
+                    Cfg::Never => AppIconTheme::Never,
+                },
             }
         })
     };

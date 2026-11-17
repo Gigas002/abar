@@ -121,6 +121,11 @@ impl IconCache {
         entry.pixmap.as_ref()
     }
 
+    /// The icon theme searched first (`XDG_ICON_THEME`, or `hicolor`).
+    pub fn theme_name(&self) -> &str {
+        &self.theme_name
+    }
+
     /// Number of cached names (hits and misses).
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -258,6 +263,23 @@ pub fn resolve_icon(
 
     // Last-resort pixmaps directory (exact name only).
     find_in_dir(Path::new("/usr/share/pixmaps"), name)
+}
+
+/// Find `name` among the icons an app ships in `dir` (its SNI
+/// `IconThemePath`): first as a theme inside it (`theme_name`, then
+/// `hicolor`, e.g. `dir/hicolor/22x22/apps/name.png`), then directly in it.
+///
+/// Returns `None` when `dir` is not absolute or `name` is not a plain icon
+/// name; both come from the app.
+pub fn resolve_in_app_dir(dir: &str, name: &str, size: u32, theme_name: &str) -> Option<PathBuf> {
+    let base = Path::new(dir);
+    if !base.is_absolute() || name.is_empty() || name.contains('/') || name.starts_with('.') {
+        return None;
+    }
+    [theme_name, "hicolor"]
+        .iter()
+        .find_map(|theme| find_in_theme(base, theme, name, size))
+        .or_else(|| find_in_dir(base, name))
 }
 
 /// Try the full icon name, then progressively strip trailing `-` segments,
