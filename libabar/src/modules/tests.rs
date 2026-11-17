@@ -39,3 +39,17 @@ fn posting_never_blocks_on_a_full_wakeup_socket() {
     assert!(rx.read(&mut buf).unwrap() > 0, "the loop was woken");
     assert_eq!(mb.take().modules[0].text, "999999");
 }
+
+#[test]
+fn script_lines_may_carry_a_tooltip() {
+    let line: crate::modules::ScriptLine =
+        serde_json::from_str(r#"{"text":"x","tooltip":"one\ntwo"}"#).unwrap();
+    let update = crate::modules::ModuleUpdate::from_script("m", line);
+    assert_eq!(update.tooltip.as_deref(), Some("one\ntwo"));
+    let blank: crate::modules::ScriptLine =
+        serde_json::from_str(r#"{"text":"x","tooltip":"  "}"#).unwrap();
+    assert_eq!(
+        crate::modules::ModuleUpdate::from_script("m", blank).tooltip,
+        None
+    );
+}

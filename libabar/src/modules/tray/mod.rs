@@ -16,6 +16,51 @@ pub enum AppIconTheme {
     Never,
 }
 
+/// A tray item's tooltip: its tooltip title (or title) over its description,
+/// with the HTML-like markup SNI allows in descriptions removed.
+pub fn tooltip(item: &ipc::MinimalTrayItem) -> Option<String> {
+    let title = item
+        .tooltip_title
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .or(item.title.as_deref());
+    let description = item.tooltip_description.as_deref().map(strip_tags);
+    let lines: Vec<&str> = [title, description.as_deref()]
+        .into_iter()
+        .flatten()
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// Drop `<…>` tags (`<br>` becomes a line break) and decode the basic
+/// entities.
+fn strip_tags(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find('>') else {
+            rest = &rest[start..];
+            break;
+        };
+        let tag = rest[start + 1..start + end].trim().to_ascii_lowercase();
+        if tag.starts_with("br") || tag == "/p" {
+            out.push('\n');
+        }
+        rest = &rest[start + end + 1..];
+    }
+    out.push_str(rest);
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+}
+
 /// The icon to draw for a tray item, as a name [`IconCache::get`] loads (a
 /// theme icon name, or an absolute path into the app's icon directory), or
 /// `None` to show text.

@@ -17,6 +17,7 @@ font_size = 16
 [modules]
 custom = [
     {{ name = "probe", icon = "abar-test-no-such-icon",
+       tooltip = "Probe tooltip\nsecond line",
        on_left_click = "echo left >> {{dir}}/clicks",
        on_right_click = "echo right >> {{dir}}/clicks",
        on_middle_click = "echo middle >> {{dir}}/clicks",
@@ -209,6 +210,59 @@ fn clicking_outside_an_open_submenu_closes_it_without_running_anything() {
 }
 
 #[test]
+fn a_tooltip_shows_under_a_resting_pointer_and_goes_when_it_leaves() {
+    let sway = sway_or_skip!();
+    let mut abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
+    let (islands, y) = bar_islands(&sway);
+    let bar_height = abar.bar_height();
+    let below = |sway: &Sway| sway.screenshot(0, bar_height, common::WIDTH, 120);
+    let mut pointer = abar.pointer(&sway);
+    let probe_mid = (islands[0].0 + islands[0].1) / 2;
+    pointer.move_to(probe_mid, y);
+    abar.wait_for_log("tooltip", "tooltip shown lines=2");
+
+    // A box of two text rows, centred under the probe, with text in it.
+    let rows = wait_for("tooltip drawn", || {
+        let rows = island_rows(&below(&sway));
+        (rows.len() > 20).then_some(rows)
+    });
+    let img = below(&sway);
+    let cols = runs(&img, rows[1], ISLAND_BG);
+    assert_eq!(cols.len(), 1, "{cols:?}");
+    let centre = (cols[0].0 + cols[0].1) / 2;
+    assert!(
+        centre.abs_diff(probe_mid) < 4 || cols[0].0 == 0,
+        "{cols:?} vs {probe_mid}"
+    );
+    assert!(img.count(common::FOREGROUND) > 0, "text drawn");
+
+    pointer.move_to(common::WIDTH / 2, 400);
+    wait_for("tooltip gone", || {
+        (below(&sway).count(ISLAND_BG) == 0).then_some(())
+    });
+
+    // A click hides it and still runs the command.
+    pointer.move_to(probe_mid, y);
+    abar.wait_for_log_count("tooltip again", "tooltip shown", 2);
+    pointer.click(BTN_LEFT);
+    abar.wait_for_file("clicks", "left");
+    wait_for("tooltip hidden by the click", || {
+        (below(&sway).count(ISLAND_BG) == 0).then_some(())
+    });
+}
+
+#[test]
+fn a_segment_without_a_tooltip_shows_none() {
+    let sway = sway_or_skip!();
+    let mut abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
+    let (islands, y) = bar_islands(&sway);
+    let mut pointer = abar.pointer(&sway);
+    pointer.move_to((islands[1].0 + islands[1].1) / 2, y);
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    assert!(!abar.log().contains("tooltip shown"), "{}", abar.log());
+}
+
+#[test]
 fn a_new_output_gets_a_bar_and_an_unplugged_one_loses_it() {
     let sway = sway_or_skip!();
     let mut abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
@@ -286,8 +340,13 @@ right = ["menu"]
                 .map(|(a, b)| b - a)
         };
         let mut f = fifo(&abar);
-        writeln!(f, r#"{{"text":"short"}}"#).unwrap();
+        writeln!(f, r#"{{"text":"short","tooltip":"from the script"}}"#).unwrap();
         let short = wait_for("short label", || width_of_center(&sway));
+        let mut pointer = abar.pointer(&sway);
+        let (_, y) = bar_islands(&sway);
+        pointer.move_to(common::WIDTH / 2, y);
+        abar.wait_for_log("script tooltip", "tooltip shown lines=1");
+        pointer.move_to(common::WIDTH / 2, 400);
         writeln!(f, r#"{{"text":"a much much longer window title"}}"#).unwrap();
         wait_for("label grows", || {
             width_of_center(&sway).filter(|w| *w > short + 50)
@@ -315,7 +374,7 @@ mod tray {
         let config = probe_config(
             r#"
 [tray]
-exec = "echo '[{\"app_id\":\"org.test.One\",\"title\":\"One\",\"status\":\"Active\",\"icon_handle\":null},{\"app_id\":\"org.test.Hidden\",\"title\":\"Hidden\",\"status\":\"Passive\",\"icon_handle\":null}]'; exec sleep 600"
+exec = "echo '[{\"app_id\":\"org.test.One\",\"title\":\"One\",\"status\":\"Active\",\"icon_handle\":null,\"tooltip_title\":\"One\",\"tooltip_description\":\"<b>all</b> good\"},{\"app_id\":\"org.test.Hidden\",\"title\":\"Hidden\",\"status\":\"Passive\",\"icon_handle\":null}]'; exec sleep 600"
 feed_id = true
 on_left_click = "echo clicked >> {dir}/tray"
 "#,
@@ -332,6 +391,7 @@ right = [["tray"], ["menu"]]
         });
         let mut pointer = abar.pointer(&sway);
         pointer.move_to((islands[1].0 + islands[1].1) / 2, y);
+        abar.wait_for_log("tray tooltip", "tooltip shown lines=2");
         pointer.click(BTN_LEFT);
         assert_eq!(
             abar.wait_for_file("tray", "org.test"),

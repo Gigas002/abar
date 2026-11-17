@@ -330,3 +330,11 @@ fn tray_app_icon_theme_defaults_to_fallback() {
     assert_eq!(tray("app_icon_theme = \"never\""), AppIconTheme::Never);
     assert!(toml::from_str::<super::Config>("[tray]\napp_icon_theme = \"always\"").is_err());
 }
+
+#[test]
+fn custom_modules_take_a_tooltip() {
+    let cfg =
+        parse("[modules]\ncustom = [{ name = \"a\", icon = \"x\", tooltip = \"Hello\\nthere\" }]");
+    let custom = cfg.modules.unwrap().custom.unwrap();
+    assert_eq!(custom[0].tooltip.as_deref(), Some("Hello\nthere"));
+}

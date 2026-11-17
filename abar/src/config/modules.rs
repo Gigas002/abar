@@ -14,6 +14,8 @@ pub struct Custom {
     pub icon: String,
     #[serde(default)]
     pub submenu: Vec<SubmenuItem>,
+    /// Shown while the pointer rests on the module.
+    pub tooltip: Option<String>,
     #[serde(flatten)]
     pub events: Option<Events>,
 }

@@ -85,6 +85,7 @@ fn make_segment(name: &str, modules: Option<&Modules>) -> Segment {
                 action: item.action.clone(),
             })
             .collect();
+        seg.tooltip = custom.tooltip.clone();
         return seg;
     }
     // Built-in modules: text placeholder until exec script provides live data.

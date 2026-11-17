@@ -14,11 +14,12 @@ exits (see [Script lifecycle](#script-lifecycle)).
 { "text": "string", "markup": false, "icon": null }
 ```
 
-| Field    | Type           | Required | Description                                                                                                                  |
-| -------- | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `text`   | string         | yes      | Text to display. May contain Pango-style markup when `markup` is `true`.                                                     |
-| `markup` | bool           | no       | Default `false`. When `true`, `text` is parsed as markup (see below).                                                        |
-| `icon`   | string \| null | no       | FreeDesktop icon name or absolute path, shown before the text (alone when `text` is empty). Ignored when it cannot be found. |
+| Field     | Type           | Required | Description                                                                                                                  |
+| --------- | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `text`    | string         | yes      | Text to display. May contain Pango-style markup when `markup` is `true`.                                                     |
+| `markup`  | bool           | no       | Default `false`. When `true`, `text` is parsed as markup (see below).                                                        |
+| `icon`    | string \| null | no       | FreeDesktop icon name or absolute path, shown before the text (alone when `text` is empty). Ignored when it cannot be found. |
+| `tooltip` | string \| null | no       | Shown in a popup while the pointer rests on the module (after half a second); `\n` separates lines.                          |
 
 Unknown fields are silently ignored.
 
@@ -104,8 +105,8 @@ one SNI tray item:
 | `title`               | string \| null | no       | Human-readable name shown in fallback pickers.                                                                            |
 | `status`              | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered; any other value is shown like `Active`. |
 | `icon_handle`         | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are shown as text (tooltip title, title or `app_id`).              |
-| `tooltip_title`       | string \| null | no       | Also tried as an icon name, lowercased (`"Discord"` → `discord`).                                                         |
-| `tooltip_description` | string \| null | no       | Read, not shown yet.                                                                                                      |
+| `tooltip_title`       | string \| null | no       | First line of the tooltip (`title` when empty); also tried as an icon name, lowercased (`"Discord"` → `discord`).         |
+| `tooltip_description` | string \| null | no       | Rest of the tooltip; HTML-like tags are removed (`<br>` breaks the line).                                                 |
 | `icon_theme_path`     | string \| null | no       | Directory of icons the app ships (SNI `IconThemePath`); see `app_icon_theme`.                                             |
 
 Other fields (trayd also sends `category`, `has_pixmap`, …) are ignored.

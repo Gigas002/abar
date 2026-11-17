@@ -154,3 +154,49 @@ mod choose_icon {
         }
     }
 }
+
+mod tooltip {
+    use crate::modules::tray::ipc::{MinimalTrayItem, TrayItemStatus};
+    use crate::modules::tray::tooltip;
+
+    fn item(title: Option<&str>, tip: Option<&str>, desc: Option<&str>) -> MinimalTrayItem {
+        MinimalTrayItem {
+            app_id: "a".into(),
+            title: title.map(Into::into),
+            status: TrayItemStatus::Active,
+            icon_handle: None,
+            tooltip_title: tip.map(Into::into),
+            tooltip_description: desc.map(Into::into),
+            icon_theme_path: None,
+        }
+    }
+
+    #[test]
+    fn title_over_description() {
+        let t = tooltip(&item(
+            Some("App"),
+            Some("Network"),
+            Some("Connected to home"),
+        ));
+        assert_eq!(t.as_deref(), Some("Network\nConnected to home"));
+    }
+
+    #[test]
+    fn the_title_stands_in_for_an_empty_tooltip_title() {
+        assert_eq!(
+            tooltip(&item(Some("App"), Some(" "), None)).as_deref(),
+            Some("App")
+        );
+        assert_eq!(tooltip(&item(None, None, None)), None);
+    }
+
+    #[test]
+    fn description_markup_is_removed() {
+        let t = tooltip(&item(
+            None,
+            Some("Mail"),
+            Some("<b>3</b> unread<br/>from &lt;bob&gt; &amp; <i>alice</i>"),
+        ));
+        assert_eq!(t.as_deref(), Some("Mail\n3 unread\nfrom <bob> & alice"));
+    }
+}

@@ -43,6 +43,9 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 
+/// How long the pointer rests on a segment before its tooltip shows.
+const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Blocks until the layer surface is closed, `SIGTERM`/`SIGINT`/`SIGHUP`
 /// arrives, or an unrecoverable error occurs. Exec scripts are stopped on
 /// every one of these paths.
@@ -95,6 +98,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         pointer: PointerState::default(),
         keyboard: None,
         submenu: None,
+        tooltip: None,
         icon_cache: IconCache::with_mode(icon_mode),
         font: None,
         mailbox: Arc::clone(&mailbox),
@@ -260,7 +264,15 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
             PollFd::new(&wakeup_rx, PollFlags::IN),
         ];
 
-        match poll(&mut pollfds, None) {
+        // Wake up when a pending tooltip is due.
+        let timeout = state.pointer.tooltip_due.map(|(due, ..)| {
+            let left = due.saturating_duration_since(std::time::Instant::now());
+            rustix::event::Timespec {
+                tv_sec: left.as_secs() as _,
+                tv_nsec: left.subsec_nanos() as _,
+            }
+        });
+        match poll(&mut pollfds, timeout.as_ref()) {
             Ok(_) => {}
             Err(rustix::io::Errno::INTR) => {
                 drop(read_guard);
@@ -291,6 +303,7 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         } else {
             drop(read_guard);
         }
+        state.show_due_tooltip(&qh);
     }
 
     Ok(())
@@ -363,6 +376,22 @@ struct PointerState {
     submenu_y: f64,
     /// Serial of the last button press, needed to grab a submenu popup.
     button_serial: u32,
+    /// When to show the tooltip of `(bar_idx, (island, segment))`.
+    tooltip_due: Option<(std::time::Instant, usize, (usize, usize))>,
+}
+
+/// A shown tooltip: an `xdg_popup` under its segment, without a grab, so it
+/// takes no input and goes away when the pointer moves off the segment.
+struct TooltipState {
+    surface: wl_surface::WlSurface,
+    xdg_surface: XdgSurface,
+    popup: XdgPopup,
+    viewport: Option<WpViewport>,
+    buffer: Option<wl_buffer::WlBuffer>,
+    bar_idx: usize,
+    lines: Vec<crate::model::SubmenuItemConfig>,
+    line_height: f64,
+    width: u32,
 }
 
 /// An open submenu: an `xdg_popup` on the bar with an explicit grab, so the
@@ -463,6 +492,7 @@ struct AppState {
     pointer: PointerState,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     submenu: Option<SubmenuState>,
+    tooltip: Option<TooltipState>,
     icon_cache: IconCache,
     font: Option<FontContext>,
     /// Updates posted by background tasks (exec scripts, clock).
@@ -605,6 +635,7 @@ impl AppState {
         self.outputs.retain(|o| o.name != name);
 
         if let Some(idx) = self.bars.iter().position(|b| b.output_name == name) {
+            self.hide_tooltip();
             let bar = self.bars.remove(idx);
             bar.destroy();
 
@@ -654,6 +685,10 @@ impl AppState {
             .and_then(|c| crate::hit_test::segment_coords_at(c, x, y));
         if new_hover != self.pointer.hovered {
             self.pointer.hovered = new_hover;
+            self.hide_tooltip();
+            self.pointer.tooltip_due = new_hover
+                .filter(|_| self.submenu.is_none())
+                .map(|key| (std::time::Instant::now() + TOOLTIP_DELAY, bar_idx, key));
             if let Some(shm) = self.shm.clone() {
                 let (w, h) = (self.bars[bar_idx].bar_width, self.bars[bar_idx].bar_height);
                 if let Err(e) = self.resize_and_paint(bar_idx, &shm, qh, w, h) {
@@ -665,6 +700,7 @@ impl AppState {
 
     /// Clear hover and pressed state on pointer leave, repaint if needed.
     fn clear_interaction(&mut self, output_name: u32, qh: &QueueHandle<Self>) {
+        self.hide_tooltip();
         let had = self.pointer.hovered.is_some() || self.pointer.pressed.is_some();
         self.pointer.hovered = None;
         self.pointer.pressed = None;
@@ -679,6 +715,151 @@ impl AppState {
         }
     }
 
+    /// Measure `lines` as popup rows: (width, height, row height), logical.
+    fn measure_rows(&self, lines: &[crate::model::SubmenuItemConfig]) -> Option<(u32, u32, f64)> {
+        let font = self.font.as_ref()?;
+        let mut max_w = 0.0_f64;
+        let mut text_h = 0.0_f64;
+        for line in lines {
+            let (w, h) = font.measure(&line.content);
+            max_w = max_w.max(w);
+            text_h = text_h.max(h);
+        }
+        let row_h = text_h + 2.0 * self.spec.style.island_padding_y;
+        let w = ((max_w + 2.0 * self.spec.style.island_padding_x).ceil() as u32).max(1);
+        let h = ((row_h * lines.len() as f64).ceil() as u32).max(1);
+        Some((w, h, row_h))
+    }
+
+    /// Cancel a pending tooltip and close a shown one.
+    fn hide_tooltip(&mut self) {
+        self.pointer.tooltip_due = None;
+        if let Some(tip) = self.tooltip.take() {
+            if let Some(viewport) = tip.viewport {
+                viewport.destroy();
+            }
+            tip.popup.destroy();
+            tip.xdg_surface.destroy();
+            tip.surface.destroy();
+            if let Some(buffer) = tip.buffer {
+                buffer.destroy();
+            }
+        }
+    }
+
+    /// Show the pending tooltip once its delay has passed.
+    fn show_due_tooltip(&mut self, qh: &QueueHandle<Self>) {
+        let Some((due, bar_idx, (island_idx, seg_idx))) = self.pointer.tooltip_due else {
+            return;
+        };
+        if std::time::Instant::now() < due {
+            return;
+        }
+        self.pointer.tooltip_due = None;
+        if self.submenu.is_some() || self.active_bar_idx() != Some(bar_idx) {
+            return;
+        }
+        let Some((text, seg_x, seg_right)) = self.bars[bar_idx]
+            .computed
+            .as_ref()
+            .and_then(|c| c.islands.get(island_idx)?.segments.get(seg_idx))
+            .and_then(|seg| Some((seg.tooltip.clone()?, seg.x, seg.x + seg.width)))
+        else {
+            return;
+        };
+        let lines: Vec<crate::model::SubmenuItemConfig> = text
+            .lines()
+            .map(|l| crate::model::SubmenuItemConfig {
+                content: l.to_owned(),
+                action: String::new(),
+            })
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        let Some((width, height, line_height)) = self.measure_rows(&lines) else {
+            return;
+        };
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
+        let surface = compositor.create_surface(qh, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, qh, ());
+        let bar = &self.bars[bar_idx];
+        let viewport = bar
+            .fractional
+            .as_ref()
+            .and(self.viewporter.as_ref())
+            .map(|v| v.get_viewport(&surface, qh, ()));
+        let positioner = wm_base.create_positioner(qh, ());
+        positioner.set_size(width as i32, height as i32);
+        positioner.set_anchor_rect(
+            seg_x.floor() as i32,
+            0,
+            ((seg_right - seg_x).ceil() as i32).max(1),
+            bar.bar_height as i32,
+        );
+        positioner.set_anchor(PopupAnchor::Bottom);
+        positioner.set_gravity(Gravity::Bottom);
+        positioner
+            .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY);
+        let popup = xdg_surface.get_popup(None, &positioner, qh, ());
+        bar.layer_surface.get_popup(&popup);
+        positioner.destroy();
+        surface.commit();
+        debug!(lines = lines.len(), "tooltip shown");
+        self.tooltip = Some(TooltipState {
+            surface,
+            xdg_surface,
+            popup,
+            viewport,
+            buffer: None,
+            bar_idx,
+            lines,
+            line_height,
+            width,
+        });
+    }
+
+    fn repaint_tooltip(&mut self, qh: &QueueHandle<Self>) -> Result<(), AbarError> {
+        let (Some(tip), Some(shm), Some(font)) =
+            (self.tooltip.as_ref(), self.shm.clone(), self.font.as_ref())
+        else {
+            return Ok(());
+        };
+        let scale = if tip.bar_idx < self.bars.len() {
+            self.bar_scale(tip.bar_idx)
+        } else {
+            1.0
+        };
+        let frame = crate::render::paint_submenu(
+            &tip.lines,
+            &self.spec.style,
+            &self.spec.colors,
+            None,
+            tip.line_height,
+            font,
+            scale,
+        )?;
+        let buffer = shm_buffer(&shm, &frame, qh)?;
+        let tip = self.tooltip.as_mut().unwrap();
+        let logical_height = ((tip.line_height * tip.lines.len() as f64).ceil() as u32).max(1);
+        set_buffer_size(
+            &tip.surface,
+            tip.viewport.as_ref(),
+            scale,
+            tip.width,
+            logical_height,
+        );
+        tip.surface.attach(Some(&buffer), 0, 0);
+        tip.surface
+            .damage_buffer(0, 0, frame.width as i32, frame.height as i32);
+        tip.surface.commit();
+        tip.buffer = Some(buffer);
+        Ok(())
+    }
+
     fn open_submenu(
         &mut self,
         items: Vec<crate::model::SubmenuItemConfig>,
@@ -688,23 +869,10 @@ impl AppState {
         qh: &QueueHandle<Self>,
     ) {
         self.close_submenu(qh);
+        self.hide_tooltip();
 
-        // Measure item dimensions (needs font and style).
-        let (width, height, item_height) = {
-            let Some(font) = self.font.as_ref() else {
-                return;
-            };
-            let mut max_w = 0.0_f64;
-            let mut text_h = 0.0_f64;
-            for item in &items {
-                let (w, h) = font.measure(&item.content);
-                max_w = max_w.max(w);
-                text_h = text_h.max(h);
-            }
-            let item_h = text_h + 2.0 * self.spec.style.island_padding_y;
-            let w = ((max_w + 2.0 * self.spec.style.island_padding_x).ceil() as u32).max(1);
-            let h = ((item_h * items.len() as f64).ceil() as u32).max(1);
-            (w, h, item_h)
+        let Some((width, height, item_height)) = self.measure_rows(&items) else {
+            return;
         };
 
         let (Some(compositor), Some(wm_base), Some(seat)) = (
@@ -1001,9 +1169,11 @@ impl AppState {
             && seg.use_markup == update.use_markup
             && seg.icon_name == icon
             && seg.display_mode == mode
+            && seg.tooltip == update.tooltip
         {
             return false;
         }
+        seg.tooltip = update.tooltip;
         seg.label = update.text;
         seg.use_markup = update.use_markup;
         seg.icon_name = icon;
@@ -1057,6 +1227,7 @@ impl AppState {
                 events.on_scroll_down = append(events.on_scroll_down);
             }
             seg.events = events;
+            seg.tooltip = crate::modules::tray::tooltip(i);
             new_segs.push(seg);
         }
 
@@ -1474,6 +1645,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
             } => {
                 if btn_state == WEnum::Value(ButtonState::Pressed) {
                     state.pointer.button_serial = serial;
+                    state.hide_tooltip();
                 }
                 if btn_state == WEnum::Value(ButtonState::Pressed) {
                     if state.pointer.on_submenu {
@@ -1603,6 +1775,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, u32> for AppState {
             zwlr_layer_surface_v1::Event::Closed => {
                 debug!(output_name, "layer surface closed");
                 if let Some(idx) = state.bars.iter().position(|b| b.output_name == output_name) {
+                    state.hide_tooltip();
                     let bar = state.bars.remove(idx);
                     bar.destroy();
                     if state.pointer.active_bar_output == Some(output_name) {
@@ -1672,8 +1845,17 @@ impl Dispatch<XdgSurface, ()> for AppState {
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
             xdg_surface.ack_configure(serial);
-            if let Err(e) = state.repaint_submenu(qh) {
-                warn!(error = %e, "submenu configure repaint failed");
+            let result = if state
+                .tooltip
+                .as_ref()
+                .is_some_and(|t| &t.xdg_surface == xdg_surface)
+            {
+                state.repaint_tooltip(qh)
+            } else {
+                state.repaint_submenu(qh)
+            };
+            if let Err(e) = result {
+                warn!(error = %e, "popup configure repaint failed");
             }
         }
     }
@@ -1682,7 +1864,7 @@ impl Dispatch<XdgSurface, ()> for AppState {
 impl Dispatch<XdgPopup, ()> for AppState {
     fn event(
         state: &mut Self,
-        _: &XdgPopup,
+        popup: &XdgPopup,
         event: xdg_popup::Event,
         _: &(),
         _: &Connection,
@@ -1690,8 +1872,12 @@ impl Dispatch<XdgPopup, ()> for AppState {
     ) {
         // The user clicked outside the menu (or the grab was refused).
         if let xdg_popup::Event::PopupDone = event {
-            debug!("submenu dismissed");
-            state.close_submenu(qh);
+            if state.tooltip.as_ref().is_some_and(|t| &t.popup == popup) {
+                state.hide_tooltip();
+            } else {
+                debug!("submenu dismissed");
+                state.close_submenu(qh);
+            }
         }
     }
 }
@@ -1718,6 +1904,7 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for AppState {
                 .iter_mut()
                 .map(|b| &mut b.buffer)
                 .chain(state.submenu.iter_mut().map(|sm| &mut sm.buffer))
+                .chain(state.tooltip.iter_mut().map(|t| &mut t.buffer))
             {
                 if slot.as_ref() == Some(buffer) {
                     *slot = None;
