@@ -1080,6 +1080,12 @@ impl AppState {
             .damage_buffer(0, 0, width as i32, frame.height as i32);
         bar.surface.commit();
         bar.buffer = Some(buffer);
+        debug!(
+            output_name = bar.output_name,
+            width,
+            height = frame.height,
+            "bar painted"
+        );
 
         let _ = height;
         Ok(())

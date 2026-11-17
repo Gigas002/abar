@@ -8,6 +8,7 @@ version = "0.3.0"
 dependencies = [
  "clap",
  "libabar",
+ "rustix",
  "serde",
  "serde_ignored",
  "tempfile",
@@ -15,6 +16,8 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]
