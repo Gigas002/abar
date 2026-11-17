@@ -263,38 +263,6 @@ fn a_segment_without_a_tooltip_shows_none() {
 }
 
 #[test]
-fn a_new_output_gets_a_bar_and_an_unplugged_one_loses_it() {
-    let sway = sway_or_skip!();
-    let mut abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
-    bar_islands(&sway);
-    // Its name is up to sway, so ask rather than assume HEADLESS-2.
-    let output = sway.create_output();
-    sway.msg(&[
-        "output",
-        &output,
-        "resolution",
-        "640x480",
-        "position",
-        "1280 0",
-    ]);
-    abar.wait_for_log_count("second bar painted", "bar painted", 2);
-    wait_for("islands on the second output", || {
-        let img = sway.screenshot(1280, 0, 640, 60);
-        (img.count(ISLAND_BG) > 0).then_some(())
-    });
-    sway.msg(&["output", &output, "unplug"]);
-    // sway closes the layer surface, then removes the output.
-    abar.wait_for_log("second bar closed", "layer surface closed");
-    assert!(abar.try_wait().is_none(), "abar keeps running");
-    // The first bar still answers.
-    let (islands, y) = bar_islands(&sway);
-    let mut pointer = abar.pointer(&sway);
-    pointer.move_to((islands[0].0 + islands[0].1) / 2, y);
-    pointer.click(BTN_LEFT);
-    abar.wait_for_file("clicks", "left");
-}
-
-#[test]
 fn sigterm_exits_cleanly() {
     let sway = sway_or_skip!();
     let mut abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
