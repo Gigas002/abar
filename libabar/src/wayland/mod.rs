@@ -12,6 +12,13 @@ use wayland_client::protocol::{
     wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup::{self, XdgPopup},
     xdg_positioner::{Anchor as PopupAnchor, ConstraintAdjustment, Gravity},
@@ -80,6 +87,8 @@ pub fn run_bar(spec: BarSpec, modules: ModuleConfigs) -> Result<(), AbarError> {
         shm: None,
         layer_shell: None,
         wm_base: None,
+        viewporter: None,
+        fractional_scale: None,
         seat: None,
         outputs: Vec::new(),
         bars: Vec::new(),
@@ -366,6 +375,8 @@ struct SubmenuState {
     /// The bar the menu belongs to; its keyboard focus is reset on close.
     bar_idx: usize,
     buffer: Option<wl_buffer::WlBuffer>,
+    /// Sizes the buffer to the logical size when the scale is fractional.
+    viewport: Option<WpViewport>,
     items: Vec<crate::model::SubmenuItemConfig>,
     hovered: Option<usize>,
     item_height: f64,
@@ -378,6 +389,9 @@ struct OutputInfo {
     /// tie a `Bar` back to the output it was created for.
     name: u32,
     output: wl_output::WlOutput,
+    /// `wl_output.scale`: the integer scale buffers should be drawn at when
+    /// fractional scaling is not available.
+    scale: i32,
 }
 
 /// Per-output bar surface state. One `Bar` is created for each connected
@@ -390,13 +404,40 @@ struct Bar {
     pending_configure: Option<(u32, u32, u32)>,
     /// The buffer last attached; released buffers destroy themselves.
     buffer: Option<wl_buffer::WlBuffer>,
+    /// Logical size (layout and input are in logical pixels; the buffer is
+    /// this times the scale).
     bar_width: u32,
     bar_height: u32,
     computed: Option<ComputedBar>,
+    /// Fractional scaling: the compositor's preferred scale for the surface,
+    /// and a viewport that maps the buffer back to the logical size.
+    fractional: Option<(WpFractionalScaleV1, WpViewport)>,
+    /// `wp_fractional_scale_v1.preferred_scale`: the scale times 120.
+    preferred_scale: Option<u32>,
+}
+
+/// Viewport and fractional-scale objects for `surface`, when the compositor
+/// offers both protocols.
+fn fractional_objects(
+    viewporter: Option<&WpViewporter>,
+    manager: Option<&WpFractionalScaleManagerV1>,
+    surface: &wl_surface::WlSurface,
+    output_name: u32,
+    qh: &QueueHandle<AppState>,
+) -> Option<(WpFractionalScaleV1, WpViewport)> {
+    let (viewporter, manager) = (viewporter?, manager?);
+    Some((
+        manager.get_fractional_scale(surface, qh, output_name),
+        viewporter.get_viewport(surface, qh, ()),
+    ))
 }
 
 impl Bar {
     fn destroy(self) {
+        if let Some((fractional, viewport)) = self.fractional {
+            fractional.destroy();
+            viewport.destroy();
+        }
         self.layer_surface.destroy();
         self.surface.destroy();
         if let Some(buffer) = self.buffer {
@@ -412,6 +453,8 @@ struct AppState {
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
     wm_base: Option<XdgWmBase>,
+    viewporter: Option<WpViewporter>,
+    fractional_scale: Option<WpFractionalScaleManagerV1>,
     seat: Option<wl_seat::WlSeat>,
     /// Every currently bound output; used to spin up a `Bar` per monitor.
     outputs: Vec<OutputInfo>,
@@ -482,6 +525,13 @@ impl AppState {
             layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer_surface.set_size(0, initial_height);
 
+            let fractional = fractional_objects(
+                self.viewporter.as_ref(),
+                self.fractional_scale.as_ref(),
+                &surface,
+                name,
+                qh,
+            );
             surface.commit();
 
             self.bars.push(Bar {
@@ -493,8 +543,60 @@ impl AppState {
                 bar_width: 1,
                 bar_height: initial_height,
                 computed: None,
+                fractional,
+                preferred_scale: None,
             });
             debug!(output_name = name, "layer surface created for output");
+        }
+    }
+
+    /// Give bars created before both scaling globals were bound their
+    /// fractional-scale objects.
+    fn add_fractional_scaling(&mut self, qh: &QueueHandle<Self>) {
+        for bar in &mut self.bars {
+            if bar.fractional.is_none() {
+                bar.fractional = fractional_objects(
+                    self.viewporter.as_ref(),
+                    self.fractional_scale.as_ref(),
+                    &bar.surface,
+                    bar.output_name,
+                    qh,
+                );
+            }
+        }
+    }
+
+    /// The scale bar `bar_idx` is drawn at: the compositor's preferred
+    /// fractional scale when it sends one, otherwise its output's integer
+    /// scale.
+    fn bar_scale(&self, bar_idx: usize) -> f64 {
+        let bar = &self.bars[bar_idx];
+        let output_scale = self
+            .outputs
+            .iter()
+            .find(|o| o.name == bar.output_name)
+            .map_or(1, |o| o.scale.max(1));
+        match (&bar.fractional, bar.preferred_scale) {
+            (Some(_), Some(scale)) if scale > 0 => f64::from(scale) / 120.0,
+            _ => f64::from(output_scale),
+        }
+    }
+
+    /// Repaint the bars on `output_name` (after its scale changed).
+    fn repaint_output(&mut self, output_name: u32, qh: &QueueHandle<Self>) {
+        let Some(shm) = self.shm.clone() else {
+            return;
+        };
+        let Some(idx) = self
+            .bars
+            .iter()
+            .position(|b| b.output_name == output_name && b.computed.is_some())
+        else {
+            return;
+        };
+        let (w, h) = (self.bars[idx].bar_width, self.bars[idx].bar_height);
+        if let Err(e) = self.resize_and_paint(idx, &shm, qh, w, h) {
+            warn!(error = %e, "repaint for a new scale failed");
         }
     }
 
@@ -615,6 +717,13 @@ impl AppState {
         };
         let surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, qh, ());
+        // Drawn at its bar's scale; a viewport maps fractional scales back.
+        let viewport = self
+            .bars
+            .get(bar_idx)
+            .and_then(|b| b.fractional.as_ref())
+            .and(self.viewporter.as_ref())
+            .map(|v| v.get_viewport(&surface, qh, ()));
 
         // Below the segment, left edges aligned; the compositor slides it
         // back on screen when it would overflow the output.
@@ -649,6 +758,7 @@ impl AppState {
             popup,
             bar_idx,
             buffer: None,
+            viewport,
             items,
             hovered: None,
             item_height,
@@ -663,6 +773,9 @@ impl AppState {
                     .set_keyboard_interactivity(KeyboardInteractivity::None);
                 bar.surface.commit();
             }
+            if let Some(viewport) = sm.viewport {
+                viewport.destroy();
+            }
             sm.popup.destroy();
             sm.xdg_surface.destroy();
             sm.surface.destroy();
@@ -674,9 +787,14 @@ impl AppState {
     }
 
     fn repaint_submenu(&mut self, qh: &QueueHandle<Self>) -> Result<(), AbarError> {
-        let (items, hovered, item_height) = match self.submenu.as_ref() {
-            Some(sm) => (sm.items.clone(), sm.hovered, sm.item_height),
+        let (items, hovered, item_height, bar_idx) = match self.submenu.as_ref() {
+            Some(sm) => (sm.items.clone(), sm.hovered, sm.item_height, sm.bar_idx),
             None => return Ok(()),
+        };
+        let scale = if bar_idx < self.bars.len() {
+            self.bar_scale(bar_idx)
+        } else {
+            1.0
         };
         let Some(shm) = self.shm.clone() else {
             return Ok(());
@@ -692,10 +810,19 @@ impl AppState {
             hovered,
             item_height,
             font,
+            scale,
         )?;
 
         let buffer = shm_buffer(&shm, &frame, qh)?;
         let sm = self.submenu.as_mut().unwrap();
+        let logical_height = ((item_height * items.len() as f64).ceil() as u32).max(1);
+        set_buffer_size(
+            &sm.surface,
+            sm.viewport.as_ref(),
+            scale,
+            sm.width,
+            logical_height,
+        );
         sm.surface.attach(Some(&buffer), 0, 0);
         sm.surface
             .damage_buffer(0, 0, frame.width as i32, frame.height as i32);
@@ -1058,6 +1185,7 @@ impl AppState {
         } else {
             None
         };
+        let scale = self.bar_scale(bar_idx);
         let frame = paint_computed(
             &self.spec,
             &computed,
@@ -1065,30 +1193,56 @@ impl AppState {
             &mut self.icon_cache,
             hovered,
             pressed,
+            scale,
         )?;
+        let logical_height = computed.height.max(1);
         let bar = &mut self.bars[bar_idx];
-        bar.bar_height = frame.height;
+        bar.bar_height = logical_height;
         bar.computed = Some(computed);
 
-        bar.layer_surface.set_exclusive_zone(frame.height as i32);
-        bar.layer_surface.set_size(0, frame.height);
+        bar.layer_surface.set_exclusive_zone(logical_height as i32);
+        bar.layer_surface.set_size(0, logical_height);
 
         let buffer = shm_buffer(shm, &frame, qh)?;
         let bar = &mut self.bars[bar_idx];
+        let viewport = bar.fractional.as_ref().map(|(_, v)| v);
+        set_buffer_size(&bar.surface, viewport, scale, width, logical_height);
         bar.surface.attach(Some(&buffer), 0, 0);
         bar.surface
-            .damage_buffer(0, 0, width as i32, frame.height as i32);
+            .damage_buffer(0, 0, frame.width as i32, frame.height as i32);
         bar.surface.commit();
         bar.buffer = Some(buffer);
         debug!(
             output_name = bar.output_name,
             width,
-            height = frame.height,
+            height = logical_height,
+            scale,
+            buffer_width = frame.width,
+            buffer_height = frame.height,
             "bar painted"
         );
 
         let _ = height;
         Ok(())
+    }
+}
+
+/// Tell the compositor how the next buffer, drawn at `scale`, maps to the
+/// surface's `width` × `height` logical size: through the viewport when
+/// there is one (any scale), otherwise as an integer buffer scale.
+fn set_buffer_size(
+    surface: &wl_surface::WlSurface,
+    viewport: Option<&WpViewport>,
+    scale: f64,
+    width: u32,
+    height: u32,
+) {
+    match viewport {
+        Some(viewport) => {
+            surface.set_buffer_scale(1);
+            viewport.set_destination(width as i32, height as i32);
+        }
+        None => surface.set_buffer_scale((scale.round() as i32).max(1)),
     }
 }
 
@@ -1165,6 +1319,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         state.running = false;
                     }
                 }
+                "wp_viewporter" => {
+                    state.viewporter = Some(registry.bind::<WpViewporter, _, _>(name, 1, qh, ()));
+                    state.add_fractional_scaling(qh);
+                }
+                "wp_fractional_scale_manager_v1" => {
+                    state.fractional_scale =
+                        Some(registry.bind::<WpFractionalScaleManagerV1, _, _>(name, 1, qh, ()));
+                    state.add_fractional_scaling(qh);
+                }
                 "xdg_wm_base" => {
                     state.wm_base =
                         Some(registry.bind::<XdgWmBase, _, _>(name, 3.min(version), qh, ()));
@@ -1181,8 +1344,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                 }
                 "wl_output" => {
                     let output =
-                        registry.bind::<wl_output::WlOutput, _, _>(name, 4.min(version), qh, ());
-                    state.outputs.push(OutputInfo { name, output });
+                        registry.bind::<wl_output::WlOutput, _, _>(name, 4.min(version), qh, name);
+                    state.outputs.push(OutputInfo {
+                        name,
+                        output,
+                        scale: 1,
+                    });
                     state.create_bars_for_new_outputs(qh);
                 }
                 _ => {}
@@ -1562,7 +1729,60 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for AppState {
 }
 wayland_client::delegate_noop!(AppState: ignore ZwlrLayerShellV1);
 wayland_client::delegate_noop!(AppState: ignore wayland_protocols::xdg::shell::client::xdg_positioner::XdgPositioner);
-wayland_client::delegate_noop!(AppState: ignore wl_output::WlOutput);
+wayland_client::delegate_noop!(AppState: ignore WpViewporter);
+wayland_client::delegate_noop!(AppState: ignore WpViewport);
+wayland_client::delegate_noop!(AppState: ignore WpFractionalScaleManagerV1);
+
+impl Dispatch<wl_output::WlOutput, u32> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &wl_output::WlOutput,
+        event: wl_output::Event,
+        name: &u32,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Scale { factor } = event
+            && let Some(output) = state.outputs.iter_mut().find(|o| o.name == *name)
+            && output.scale != factor
+        {
+            output.scale = factor;
+            debug!(output_name = name, factor, "output scale");
+            state.repaint_output(*name, qh);
+        }
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, u32> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        output_name: &u32,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
+            return;
+        };
+        let Some(bar) = state
+            .bars
+            .iter_mut()
+            .find(|b| b.output_name == *output_name)
+        else {
+            return;
+        };
+        if bar.preferred_scale != Some(scale) {
+            bar.preferred_scale = Some(scale);
+            debug!(
+                output_name,
+                scale = f64::from(scale) / 120.0,
+                "preferred scale"
+            );
+            state.repaint_output(*output_name, qh);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

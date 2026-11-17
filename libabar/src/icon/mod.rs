@@ -36,11 +36,11 @@ struct Entry {
     used: Instant,
 }
 
-/// Pixmap cache keyed by icon name; icons are scaled on first load.
+/// Pixmap cache keyed by icon name and size; icons are scaled on load.
 ///
 /// Not `Send` — keep on the main thread alongside the Wayland event loop.
 pub struct IconCache {
-    entries: HashMap<String, Entry>,
+    entries: HashMap<(String, u32), Entry>,
     search_dirs: Vec<PathBuf>,
     theme_name: String,
     mode: IconLookupMode,
@@ -96,19 +96,20 @@ impl IconCache {
     /// `size` × `size` pixels on first access. Returns `None` if the icon cannot be found or loaded.
     pub fn get(&mut self, name: &str, size: u32) -> Option<&Arc<Pixmap>> {
         let now = Instant::now();
+        let key = (name.to_string(), size);
         let fresh = self
             .entries
-            .get(name)
+            .get(&key)
             .is_some_and(|e| e.pixmap.is_some() || now.duration_since(e.loaded) < MISS_TTL);
         if !fresh {
-            if self.entries.len() >= MAX_ENTRIES && !self.entries.contains_key(name) {
+            if self.entries.len() >= MAX_ENTRIES && !self.entries.contains_key(&key) {
                 self.evict_least_recently_used();
             }
             let pixmap = resolve_icon(name, size, &self.search_dirs, &self.theme_name, self.mode)
                 .and_then(|p| load_icon_file(&p, size).ok().flatten())
                 .map(Arc::new);
             self.entries.insert(
-                name.to_string(),
+                key.clone(),
                 Entry {
                     pixmap,
                     loaded: now,
@@ -116,7 +117,7 @@ impl IconCache {
                 },
             );
         }
-        let entry = self.entries.get_mut(name)?;
+        let entry = self.entries.get_mut(&key)?;
         entry.used = now;
         entry.pixmap.as_ref()
     }
@@ -146,14 +147,14 @@ impl IconCache {
     }
 
     fn evict_least_recently_used(&mut self) {
-        let mut by_use: Vec<(Instant, String)> = self
+        let mut by_use: Vec<(Instant, (String, u32))> = self
             .entries
             .iter()
-            .map(|(name, e)| (e.used, name.clone()))
+            .map(|(key, e)| (e.used, key.clone()))
             .collect();
         by_use.sort();
-        for (_, name) in by_use.into_iter().take(MAX_ENTRIES / 4) {
-            self.entries.remove(&name);
+        for (_, key) in by_use.into_iter().take(MAX_ENTRIES / 4) {
+            self.entries.remove(&key);
         }
     }
 }

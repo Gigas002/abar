@@ -339,3 +339,84 @@ right = [["tray"], ["menu"]]
         );
     }
 }
+
+/// On scaled outputs the bar is drawn at the output's scale, not upscaled.
+///
+/// sway is told to upscale with nearest-neighbour filtering, so a buffer
+/// drawn at scale 1 comes out as repeated pixels: at scale 2 every aligned
+/// 2×2 block is one color, and at scale 1.5 one column of every three
+/// repeats its neighbour. A bar drawn at the output's scale breaks both patterns
+/// wherever there is text.
+mod hidpi {
+    use super::*;
+
+    fn scaled(scale: &str) -> (Sway, Abar) {
+        let sway = Sway::start().expect("checked by the caller");
+        sway.msg(&[
+            "output",
+            "HEADLESS-1",
+            "scale",
+            scale,
+            "scale_filter",
+            "nearest",
+        ]);
+        let abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
+        bar_islands(&sway);
+        (sway, abar)
+    }
+
+    /// Pixels of the probe island's text rows, physical.
+    fn probe_text(sway: &Sway, abar: &Abar) -> Image {
+        let (islands, _) = bar_islands(sway);
+        sway.screenshot(
+            islands[0].0,
+            0,
+            islands[0].1 - islands[0].0,
+            abar.bar_height(),
+        )
+    }
+
+    #[test]
+    fn scale_2_draws_at_twice_the_resolution() {
+        if Sway::start().is_none() {
+            return;
+        }
+        let (sway, abar) = scaled("2");
+        assert_eq!(abar.bar_height(), 45, "the height stays logical");
+        let img = probe_text(&sway, &abar);
+        assert_eq!(img.height, 90, "a 45 px bar is 90 physical px");
+        let mixed = (0..img.height / 2)
+            .flat_map(|by| (0..img.width / 2).map(move |bx| (bx * 2, by * 2)))
+            .filter(|&(x, y)| {
+                let p = img.pixel(x, y);
+                [(1, 0), (0, 1), (1, 1)]
+                    .iter()
+                    .any(|&(dx, dy)| img.pixel(x + dx, y + dy) != p)
+            })
+            .count();
+        assert!(mixed > 20, "only {mixed} 2×2 blocks have detail: upscaled");
+    }
+
+    #[test]
+    fn scale_1_5_draws_at_one_and_a_half_times_the_resolution() {
+        if Sway::start().is_none() {
+            return;
+        }
+        let (sway, abar) = scaled("1.5");
+        let img = probe_text(&sway, &abar);
+        // Upscaled, one of the three column phases never differs.
+        let differing = (0..3)
+            .map(|o| {
+                (0..img.height)
+                    .flat_map(|y| (0..img.width / 3).map(move |k| (3 * k + o, y)))
+                    .filter(|&(x, y)| x + 1 < img.width && img.pixel(x, y) != img.pixel(x + 1, y))
+                    .count()
+            })
+            .min()
+            .unwrap();
+        assert!(
+            differing > 20,
+            "only {differing} column pairs differ: upscaled"
+        );
+    }
+}

@@ -14,7 +14,8 @@ use crate::model::{BarColors, BarSpec, DisplayMode};
 use super::font::{FontContext, TextBrush};
 use super::shape::rounded_rect;
 
-/// ARGB8888 SHM buffer in **BGRA** byte order.
+/// ARGB8888 SHM buffer in **BGRA** byte order. `width` and `height` are in
+/// buffer (physical) pixels: the logical size times the scale it was painted at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub width: u32,
@@ -44,10 +45,13 @@ pub fn paint_bar(
             font.measure(text)
         }
     });
-    let frame = paint_computed(spec, &computed, &font, icons, None, None)?;
+    let frame = paint_computed(spec, &computed, &font, icons, None, None, 1.0)?;
     Ok(PaintOutput { frame, computed })
 }
 
+/// Paint a laid-out bar. Layout is in logical pixels; the frame is drawn at
+/// `scale` (the output's scale, e.g. 2 or 1.5), so it is
+/// `round(width × scale)` × `round(height × scale)` pixels.
 pub fn paint_computed(
     spec: &BarSpec,
     computed: &ComputedBar,
@@ -55,10 +59,9 @@ pub fn paint_computed(
     icons: &mut IconCache,
     hover_seg: Option<(usize, usize)>,
     active_seg: Option<(usize, usize)>,
+    scale: f64,
 ) -> Result<Frame, AbarError> {
-    let width = computed.width;
-    let height = computed.height.max(1);
-    let mut ctx = new_context(width, height)?;
+    let mut ctx = new_context(computed.width, computed.height.max(1), scale)?;
 
     for (island_idx, island) in computed.islands.iter().enumerate() {
         let is_single = island.segments.len() == 1;
@@ -112,10 +115,12 @@ pub fn paint_computed(
 
         for seg in &island.segments {
             match seg.display_mode {
-                DisplayMode::TextOnly => draw_segment_text(&mut ctx, font, &spec.colors, seg),
+                DisplayMode::TextOnly => {
+                    draw_segment_text(&mut ctx, font, &spec.colors, seg, scale);
+                }
                 DisplayMode::IconOnly => {
                     if let Some(name) = &seg.icon_name {
-                        draw_segment_icon(&mut ctx, icons, name, spec.style.font_size, seg);
+                        draw_segment_icon(&mut ctx, icons, name, spec.style.font_size, seg, scale);
                     }
                 }
                 DisplayMode::IconText => {
@@ -126,20 +131,20 @@ pub fn paint_computed(
                             width: size,
                             ..seg.clone()
                         };
-                        draw_segment_icon(&mut ctx, icons, name, size, &icon_slot);
+                        draw_segment_icon(&mut ctx, icons, name, size, &icon_slot, scale);
                     }
                     let text_slot = crate::layout::PlacedSegment {
                         x: seg.x + icon_w,
                         width: (seg.width - icon_w).max(0.0),
                         ..seg.clone()
                     };
-                    draw_segment_text(&mut ctx, font, &spec.colors, &text_slot);
+                    draw_segment_text(&mut ctx, font, &spec.colors, &text_slot, scale);
                 }
             }
         }
     }
 
-    Ok(finish(&mut ctx, font, width, height))
+    Ok(finish(&mut ctx, font))
 }
 
 /// Paint a submenu popup into a CPU buffer.
@@ -147,7 +152,7 @@ pub fn paint_computed(
 /// Uses the same font, colors and geometry parameters as the bar so no new theming
 /// variables are needed.  The caller supplies the pre-computed `item_height` (pixels per
 /// row) so that the submenu surface matches the dimensions that were already sent to the
-/// compositor via `set_size`.
+/// compositor via `set_size`. Like [`paint_computed`], it is drawn at `scale`.
 pub fn paint_submenu(
     items: &[crate::model::SubmenuItemConfig],
     style: &crate::model::BarStyle,
@@ -155,6 +160,7 @@ pub fn paint_submenu(
     hovered: Option<usize>,
     item_height: f64,
     font: &FontContext,
+    scale: f64,
 ) -> Result<Frame, AbarError> {
     // Measure the widest label to size the surface.
     let mut max_w = 0.0_f64;
@@ -165,7 +171,7 @@ pub fn paint_submenu(
 
     let width = ((max_w + 2.0 * style.island_padding_x).ceil() as u32).max(1);
     let height = ((item_height * items.len() as f64).ceil() as u32).max(1);
-    let mut ctx = new_context(width, height)?;
+    let mut ctx = new_context(width, height, scale)?;
 
     // Rounded background
     let bg_path = rounded_rect(0.0, 0.0, width as f64, height as f64, style.island_radius);
@@ -191,24 +197,40 @@ pub fn paint_submenu(
         let item_y = i as f64 * item_height;
         let tx = style.island_padding_x;
         let ty = item_y + (item_height - th) / 2.0;
-        draw_layout(&mut ctx, font, &layout, tx, ty, colors.foreground);
+        draw_layout(&mut ctx, font, &layout, tx, ty, colors.foreground, scale);
     }
 
-    Ok(finish(&mut ctx, font, width, height))
+    Ok(finish(&mut ctx, font))
 }
 
-/// Create a render context, checking that the surface fits vello_cpu's `u16` dimensions.
-fn new_context(width: u32, height: u32) -> Result<RenderContext, AbarError> {
+/// The buffer size of a `logical`-pixel side drawn at `scale`.
+pub fn scaled_size(logical: u32, scale: f64) -> u32 {
+    ((f64::from(logical) * scale).round() as u32).max(1)
+}
+
+/// Create a render context for a `width` × `height` logical surface drawn at
+/// `scale`, checking that it fits vello_cpu's `u16` dimensions. Everything
+/// drawn into it is in logical pixels.
+fn new_context(width: u32, height: u32, scale: f64) -> Result<RenderContext, AbarError> {
+    let (width, height) = (scaled_size(width, scale), scaled_size(height, scale));
     let w = u16::try_from(width)
         .map_err(|_| AbarError::Render(format!("surface width {width} too large")))?;
     let h = u16::try_from(height)
         .map_err(|_| AbarError::Render(format!("surface height {height} too large")))?;
-    Ok(RenderContext::new(w, h))
+    let mut ctx = RenderContext::new(w, h);
+    ctx.set_transform(Affine::scale(scale));
+    Ok(ctx)
+}
+
+/// Round a logical coordinate to the nearest whole buffer pixel.
+fn snap(v: f64, scale: f64) -> f64 {
+    (v * scale).round() / scale
 }
 
 /// Rasterize `ctx` and convert vello's premultiplied RGBA to the premultiplied BGRA expected by
 /// `wl_shm` ARGB8888.
-fn finish(ctx: &mut RenderContext, font: &FontContext, width: u32, height: u32) -> Frame {
+fn finish(ctx: &mut RenderContext, font: &FontContext) -> Frame {
+    let (width, height) = (u32::from(ctx.width()), u32::from(ctx.height()));
     ctx.flush();
     let mut pixmap = Pixmap::new(ctx.width(), ctx.height());
     ctx.render(&mut pixmap, &mut font.resources());
@@ -230,13 +252,14 @@ fn draw_segment_text(
     font: &FontContext,
     colors: &BarColors,
     seg: &crate::layout::PlacedSegment,
+    scale: f64,
 ) {
     let layout = font.layout(&seg.label, seg.use_markup);
     let tw = f64::from(layout.width());
     let th = f64::from(layout.height());
     let tx = seg.x + (seg.width - tw) / 2.0;
     let ty = seg.y + (seg.height - th) / 2.0;
-    draw_layout(ctx, font, &layout, tx, ty, colors.foreground);
+    draw_layout(ctx, font, &layout, tx, ty, colors.foreground, scale);
 }
 
 /// Draw a shaped layout with its top-left corner at (`x`, `y`).
@@ -247,9 +270,10 @@ fn draw_layout(
     x: f64,
     y: f64,
     foreground: [u8; 4],
+    scale: f64,
 ) {
-    // Snap the origin to whole pixels so hinted glyphs stay crisp.
-    let (x, y) = (x.round(), y.round());
+    // Snap the origin to whole buffer pixels so hinted glyphs stay crisp.
+    let (x, y) = (snap(x, scale), snap(y, scale));
     let mut resources = font.resources();
 
     for line in layout.lines() {
@@ -330,21 +354,23 @@ fn draw_segment_icon(
     name: &str,
     size: f64,
     seg: &crate::layout::PlacedSegment,
+    scale: f64,
 ) {
-    let size_px = size.round() as u32;
+    // Loaded at the buffer's resolution, so it is not upscaled.
+    let size_px = (size.round() * scale).round() as u32;
     let Some(pixmap) = icons.get(name, size_px) else {
         return;
     };
 
-    let side = f64::from(size_px);
-    let tx = (seg.x + (seg.width - side) / 2.0).round();
-    let ty = (seg.y + (seg.height - side) / 2.0).round();
+    let side = f64::from(size_px) / scale;
+    let tx = snap(seg.x + (seg.width - side) / 2.0, scale);
+    let ty = snap(seg.y + (seg.height - side) / 2.0, scale);
 
     ctx.set_paint(Image {
         image: ImageSource::Pixmap(Arc::clone(pixmap)),
         sampler: ImageSampler::default(),
     });
-    ctx.set_paint_transform(Affine::translate((tx, ty)));
+    ctx.set_paint_transform(Affine::translate((tx, ty)) * Affine::scale(1.0 / scale));
     ctx.fill_rect(&Rect::new(tx, ty, tx + side, ty + side));
     ctx.reset_paint_transform();
 }
