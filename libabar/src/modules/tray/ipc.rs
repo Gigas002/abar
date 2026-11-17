@@ -9,6 +9,12 @@ pub struct MinimalTrayItem {
     pub icon_handle: Option<String>,
     #[serde(default)]
     pub tooltip_title: Option<String>,
+    #[serde(default)]
+    pub tooltip_description: Option<String>,
+    /// The app's own icon directory (SNI `IconThemePath`), searched as
+    /// [`AppIconTheme`](super::AppIconTheme) says.
+    #[serde(default)]
+    pub icon_theme_path: Option<String>,
 }
 
 /// SNI item visibility status. `Passive` items are not rendered.

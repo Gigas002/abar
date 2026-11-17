@@ -18,7 +18,7 @@ fn local_year_format() {
 #[test]
 fn tz_format() {
     let tz = parse_tz("Europe/Moscow").unwrap();
-    let label = current_label("%H:%M", Some(tz));
+    let label = current_label("%H:%M", Some(&tz));
     assert_eq!(label.len(), 5);
     assert!(label.contains(':'));
 }
@@ -58,4 +58,38 @@ fn formats_and_timezones_cycle() {
     assert!(hm.cycle_timezone(false), "backwards wraps too");
     assert_eq!(hm.label(), "JST");
     assert!(!hm.cycle_format(), "a single format does not cycle");
+}
+
+/// The directives clock configs use render as they did with chrono.
+#[test]
+fn strftime_directives_render_as_before() {
+    let at: jiff::ZonedDateTime = "2026-03-28T21:35:07[Europe/Moscow]".parse().unwrap();
+    for (fmt, want) in [
+        ("%R %Z %d.%m.%Y", "21:35 MSK 28.03.2026"),
+        ("%H:%M:%S", "21:35:07"),
+        ("%H:%M", "21:35"),
+        ("%T", "21:35:07"),
+        ("%a %d %b", "Sat 28 Mar"),
+        ("%A, %B %e", "Saturday, March 28"),
+        ("%I:%M %p", "09:35 PM"),
+        ("%-d.%-m.%y", "28.3.26"),
+        ("%F", "2026-03-28"),
+        ("%j", "087"),
+        ("%z", "+0300"),
+        ("%Y-%m-%d %%", "2026-03-28 %"),
+    ] {
+        assert_eq!(format_time(fmt, &at), want, "{fmt}");
+    }
+}
+
+/// chrono panicked on an unknown directive; it is now shown as written.
+#[test]
+fn an_invalid_format_is_shown_instead_of_panicking() {
+    let at: jiff::ZonedDateTime = "2026-03-28T21:35:07[UTC]".parse().unwrap();
+    assert_eq!(format_time("%H %J", &at), "%H %J");
+    let clock = ClockState::new(ClockConfig {
+        formats: vec!["%J".into()],
+        timezones: vec![],
+    });
+    assert_eq!(clock.label(), "%J");
 }

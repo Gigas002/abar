@@ -14,6 +14,8 @@ pub struct Custom {
     pub icon: String,
     #[serde(default)]
     pub submenu: Vec<SubmenuItem>,
+    /// Shown while the pointer rests on the module.
+    pub tooltip: Option<String>,
     #[serde(flatten)]
     pub events: Option<Events>,
 }
@@ -74,6 +76,19 @@ pub struct Tray {
     /// handler when tray segments are rebuilt (e.g. `tray-menu.sh <app_id>`).
     #[serde(default)]
     pub feed_id: bool,
+    /// Whether the icons apps ship are used: `"fallback"` (default; only
+    /// when the icon theme has nothing), `"prefer"` or `"never"`.
+    #[serde(default)]
+    pub app_icon_theme: AppIconTheme,
     #[serde(flatten)]
     pub events: Option<Events>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppIconTheme {
+    #[default]
+    Fallback,
+    Prefer,
+    Never,
 }

@@ -6,6 +6,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # abar/tests/live.rs runs abar in a headless sway; fail instead of skipping
+  # when sway or grim is missing.
+  ABAR_LIVE_TESTS: "1"
 
 permissions:
   contents: read
@@ -19,10 +22,10 @@ jobs:
         with:
           components: llvm-tools-preview
 
-      - name: Install fontconfig (build deps)
+      - name: Install fontconfig (build deps), and sway, grim and a font for the live tests
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev
+          sudo apt-get install -y libfontconfig1-dev sway grim fonts-dejavu-core
 
       - name: Build cache
         uses: Swatinem/rust-cache@v2

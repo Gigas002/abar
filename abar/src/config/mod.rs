@@ -19,6 +19,8 @@ pub(crate) use events::events_for_module;
 pub use layout::Layout;
 #[allow(unused_imports)]
 pub use layout::LayoutEntry;
+#[allow(unused_imports)]
+pub use modules::AppIconTheme;
 pub use modules::{Clock, Keyboard, Modules, Mpris, Tray, Window, Workspaces};
 
 #[derive(Debug, Clone, Deserialize)]

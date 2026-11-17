@@ -10,7 +10,7 @@ description = "Wayland layer-shell bar runtime."
 
 [features]
 default = []
-clock = ["dep:chrono-tz"]
+clock = ["dep:jiff"]
 keyboard = []
 tray = []
 workspaces = []
@@ -19,8 +19,7 @@ mpris = []
 svg = ["dep:resvg"]
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-chrono-tz = { version = "0.10", optional = true }
+jiff = { version = "1", optional = true }
 rustix = { version = "1", features = ["event", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -28,7 +27,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util", "net", "signal"] }
 tracing = "0.1"
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 vello_cpu = "0.4"
 parley = "0.13"

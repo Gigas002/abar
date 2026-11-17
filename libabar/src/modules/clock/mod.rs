@@ -1,12 +1,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use chrono::{Local, Timelike, Utc};
-use chrono_tz::Tz;
+use jiff::fmt::strtime;
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, ZonedDateTime};
 
 #[derive(Debug, Clone)]
 pub struct ClockConfig {
     pub formats: Vec<String>,
-    pub timezones: Vec<Tz>,
+    pub timezones: Vec<TimeZone>,
 }
 
 impl Default for ClockConfig {
@@ -18,23 +19,35 @@ impl Default for ClockConfig {
     }
 }
 
-/// Parse an IANA timezone name into a `Tz`, logging a warning and returning `None` on failure.
-pub fn parse_tz(name: &str) -> Option<Tz> {
-    match name.parse::<Tz>() {
+/// Look up an IANA timezone name (in the system's tz database), logging a
+/// warning and returning `None` when it is unknown.
+pub fn parse_tz(name: &str) -> Option<TimeZone> {
+    match TimeZone::get(name) {
         Ok(tz) => Some(tz),
-        Err(_) => {
-            tracing::warn!(timezone = %name, "unknown timezone, ignoring");
+        Err(err) => {
+            tracing::warn!(timezone = %name, %err, "unknown timezone, ignoring");
             None
         }
     }
 }
 
-/// Format the current time using `fmt` in `tz`, or local time if `tz` is `None`.
-pub fn current_label(fmt: &str, tz: Option<Tz>) -> String {
-    match tz {
-        Some(tz) => Utc::now().with_timezone(&tz).format(fmt).to_string(),
-        None => Local::now().format(fmt).to_string(),
-    }
+/// Format the current time using the strftime-style `fmt` in `tz`, or in
+/// the local timezone if `tz` is `None`.
+pub fn current_label(fmt: &str, tz: Option<&TimeZone>) -> String {
+    let now = match tz {
+        Some(tz) => Timestamp::now().to_zoned_datetime(tz.clone()),
+        None => ZonedDateTime::now(),
+    };
+    format_time(fmt, &now)
+}
+
+/// `time` formatted with `fmt`; a format jiff cannot use (e.g. an unknown
+/// `%` directive) is shown as written, with a warning, instead of failing.
+fn format_time(fmt: &str, time: &ZonedDateTime) -> String {
+    strtime::format(fmt, time).unwrap_or_else(|err| {
+        tracing::warn!(format = %fmt, %err, "invalid clock format");
+        fmt.to_owned()
+    })
 }
 
 /// Milliseconds until the next full second, minimum 1.
@@ -43,7 +56,9 @@ pub fn current_label(fmt: &str, tz: Option<Tz>) -> String {
 /// after a suspend the time is right within a second (a sleep until the next
 /// minute would run on a clock that stops while suspended).
 pub fn ms_until_next_second() -> u64 {
-    let ms_past = u64::from(Local::now().nanosecond() / 1_000_000).min(999);
+    let ms_past = u64::try_from(Timestamp::now().subsec_nanosecond() / 1_000_000)
+        .unwrap_or(0)
+        .min(999);
     (1_000 - ms_past).max(1)
 }
 
@@ -70,8 +85,7 @@ impl ClockState {
         let tz = self
             .config
             .timezones
-            .get(self.timezone.load(Ordering::Relaxed))
-            .copied();
+            .get(self.timezone.load(Ordering::Relaxed));
         let fmt = self
             .config
             .formats

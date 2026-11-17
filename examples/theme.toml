@@ -11,8 +11,8 @@ foreground_color = "#c74dedFF"
 # island_padding_y = 4
 # Corner radius of island rounded rectangles, in logical pixels. 0 = sharp corners.
 # island_radius = 12
-# TODO: decide how to configure bar size and scaling, hardcode some value for now
-# scale_factor = 1.5
+# Sizes are in logical pixels: on a scaled output (e.g. scale 2 or 1.5) abar
+# draws at the output's scale, so the bar keeps its size and stays sharp.
 
 # pre-defined modules can have some additional theming options
 [workspaces]

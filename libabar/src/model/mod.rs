@@ -61,6 +61,9 @@ pub struct Segment {
     /// Popup submenu items; non-empty means a left click opens the submenu instead of
     /// executing `events.on_left_click`.
     pub submenu: Vec<SubmenuItemConfig>,
+    /// Shown in a popup while the pointer rests on the segment; lines are
+    /// separated by `\n`.
+    pub tooltip: Option<String>,
 }
 
 impl Segment {
@@ -74,6 +77,7 @@ impl Segment {
             events: SegmentEvents::default(),
             use_markup: false,
             submenu: Vec::new(),
+            tooltip: None,
         }
     }
 
@@ -88,6 +92,7 @@ impl Segment {
             events: SegmentEvents::default(),
             use_markup: false,
             submenu: Vec::new(),
+            tooltip: None,
         }
     }
 

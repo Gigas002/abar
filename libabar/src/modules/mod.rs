@@ -16,6 +16,9 @@ pub struct ScriptLine {
     pub markup: bool,
     /// Optional FreeDesktop icon name or absolute path.
     pub icon: Option<String>,
+    /// Optional tooltip, shown while the pointer rests on the module.
+    #[serde(default)]
+    pub tooltip: Option<String>,
 }
 
 /// Internal channel message sent from background tasks (exec handlers or built-in timers)
@@ -30,6 +33,8 @@ pub struct ModuleUpdate {
     pub use_markup: bool,
     /// Optional icon override; `None` leaves the segment icon unchanged.
     pub icon: Option<String>,
+    /// Tooltip text; `None` shows no tooltip.
+    pub tooltip: Option<String>,
 }
 
 impl ModuleUpdate {
@@ -40,6 +45,7 @@ impl ModuleUpdate {
             text: text.into(),
             use_markup: false,
             icon: None,
+            tooltip: None,
         }
     }
 
@@ -50,6 +56,7 @@ impl ModuleUpdate {
             text: text.into(),
             use_markup: true,
             icon: None,
+            tooltip: None,
         }
     }
 
@@ -60,6 +67,7 @@ impl ModuleUpdate {
             text: line.text,
             use_markup: line.markup,
             icon: line.icon,
+            tooltip: line.tooltip.filter(|t| !t.trim().is_empty()),
         }
     }
 }

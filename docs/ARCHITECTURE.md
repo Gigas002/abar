@@ -219,6 +219,12 @@ Use the **`tracing`** ecosystem for structured logging.
 
 - Place cross-module and end-to-end tests in `<crate>/tests/`.
 - Use temporary directories and fixtures from `examples/` where applicable.
+- `abar/tests/live.rs` runs the `abar` binary in a **headless sway**
+  (`WLR_BACKENDS=headless`, its own `XDG_RUNTIME_DIR`), clicks it with a
+  `zwlr_virtual_pointer_v1` and reads back what it drew with `grim`; this is
+  what covers the Wayland event loop (`libabar/src/wayland`). The tests skip
+  themselves when `sway` or `grim` is missing, unless `ABAR_LIVE_TESTS=1`
+  (set in CI), and never touch the session they are started from.
 
 ### 6.3 Coverage expectations
 

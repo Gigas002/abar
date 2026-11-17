@@ -14,11 +14,12 @@ exits (see [Script lifecycle](#script-lifecycle)).
 { "text": "string", "markup": false, "icon": null }
 ```
 
-| Field    | Type           | Required | Description                                                                                                                  |
-| -------- | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `text`   | string         | yes      | Text to display. May contain Pango-style markup when `markup` is `true`.                                                     |
-| `markup` | bool           | no       | Default `false`. When `true`, `text` is parsed as markup (see below).                                                        |
-| `icon`   | string \| null | no       | FreeDesktop icon name or absolute path, shown before the text (alone when `text` is empty). Ignored when it cannot be found. |
+| Field     | Type           | Required | Description                                                                                                                  |
+| --------- | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `text`    | string         | yes      | Text to display. May contain Pango-style markup when `markup` is `true`.                                                     |
+| `markup`  | bool           | no       | Default `false`. When `true`, `text` is parsed as markup (see below).                                                        |
+| `icon`    | string \| null | no       | FreeDesktop icon name or absolute path, shown before the text (alone when `text` is empty). Ignored when it cannot be found. |
+| `tooltip` | string \| null | no       | Shown in a popup while the pointer rests on the module (after half a second); `\n` separates lines.                          |
 
 Unknown fields are silently ignored.
 
@@ -98,12 +99,17 @@ one SNI tray item:
 ]
 ```
 
-| Field         | Type           | Required | Description                                                                                                               |
-| ------------- | -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `app_id`      | string         | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`).                                                  |
-| `title`       | string \| null | no       | Human-readable name shown in fallback pickers.                                                                            |
-| `status`      | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered; any other value is shown like `Active`. |
-| `icon_handle` | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are skipped.                                                       |
+| Field                 | Type           | Required | Description                                                                                                               |
+| --------------------- | -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `app_id`              | string         | yes      | Unique stable identifier for the item (used in `trayctl menu --app-id`).                                                  |
+| `title`               | string \| null | no       | Human-readable name shown in fallback pickers.                                                                            |
+| `status`              | string         | yes      | `"Active"`, `"Passive"`, or `"NeedsAttention"`. `Passive` items are not rendered; any other value is shown like `Active`. |
+| `icon_handle`         | string \| null | no       | FreeDesktop icon name. Items without a resolvable icon are shown as text (tooltip title, title or `app_id`).              |
+| `tooltip_title`       | string \| null | no       | First line of the tooltip (`title` when empty); also tried as an icon name, lowercased (`"Discord"` → `discord`).         |
+| `tooltip_description` | string \| null | no       | Rest of the tooltip; HTML-like tags are removed (`<br>` breaks the line).                                                 |
+| `icon_theme_path`     | string \| null | no       | Directory of icons the app ships (SNI `IconThemePath`); see `app_icon_theme`.                                             |
+
+Other fields (trayd also sends `category`, `has_pixmap`, …) are ignored.
 
 Emit an empty array `[]` to clear the tray:
 
@@ -134,6 +140,29 @@ sh -c "~/.config/abar/scripts/tray/tray-menu.sh 'nm-applet'"
 
 See `examples/scripts/tray/tray-menu.sh` for a `tofi`-based picker that uses
 this to call `trayctl menu --app-id <app_id>` directly.
+
+Since the id comes last, trayctl's item commands work as handlers as they
+are (trayd 0.3 or later):
+
+```toml
+on_middle_click = "trayctl secondary-activate --app-id"
+on_scroll_up = "trayctl scroll --delta 120 --app-id"
+on_scroll_down = "trayctl scroll --delta -120 --app-id"
+```
+
+### `app_icon_theme`
+
+Some apps ship their own icons and name the directory in `icon_theme_path`.
+`app_icon_theme` in `[tray]` decides whether abar looks there:
+
+| Value                  | Effect                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| `"fallback"` (default) | Only when nothing in your icon themes matches the icon name, tooltip title or title. |
+| `"prefer"`             | The app's icons first, then your icon themes.                                        |
+| `"never"`              | Never; such items show text when your themes lack the icon.                          |
+
+Inside the directory, abar looks for a theme named like yours, then
+`hicolor` (`<dir>/hicolor/22x22/apps/<name>.png`), then `<dir>/<name>.png`.
 
 ---
 

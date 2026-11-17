@@ -37,11 +37,12 @@ prefer = "theme"
 # Custom modules are just a tiny icons on your bar with defined behavior.
 # Create custom modules, by defining a new entries below.
 # Each entry requires a unique name and an icon (FreeDesktop.org icon name).
+# `tooltip` (optional) is shown while the pointer rests on the module.
 # A missing icon key is a config error; an icon that cannot be found is
 # shown as the module's name instead.
 [modules]
 custom = [
-    { name = "system_info", icon = "gnome-system-monitor", on_left_click = "$TERMINAL -e btm" },
+    { name = "system_info", icon = "gnome-system-monitor", tooltip = "System monitor", on_left_click = "$TERMINAL -e btm" },
     { name = "leave", icon = "system-log-out", submenu = [
         { content = "logout", action = "loginctl terminate-session self" },
         { content = "sleep", action = "systemctl suspend" },
@@ -101,6 +102,8 @@ on_scroll_up = "playerctl volume 0.05+"
 on_scroll_down = "playerctl volume 0.05-"
 
 [clock]
+# strftime-style formats (https://docs.rs/jiff/latest/jiff/fmt/strtime/);
+# right click cycles through them. An invalid format is shown as written.
 formats = [
     # 21:35 28.03.2026
     "%R %Z %d.%m.%Y",
@@ -116,4 +119,13 @@ exec = "~/.config/abar/scripts/tray/tray.sh"
 # When feed_id = true, each tray item's app_id is appended to every configured
 # on_* handler when tray segments update, e.g. `tray-menu.sh <app_id>`.
 feed_id = true
+# Icons apps ship: "fallback" (default; only when your icon theme has none),
+# "prefer" or "never".
+# app_icon_theme = "fallback"
 on_left_click = "~/.config/abar/scripts/tray/tray-menu.sh"
+# Middle click and the wheel go to the app (trayctl gets the app_id from feed_id).
+# Wheel up is a positive delta, as in KDE; apps that read it the other way
+# need the signs swapped.
+on_middle_click = "trayctl secondary-activate --app-id"
+on_scroll_up = "trayctl scroll --delta 120 --app-id"
+on_scroll_down = "trayctl scroll --delta -120 --app-id"

@@ -136,7 +136,7 @@ fn build_module_configs(
 
             // Prime the clock segment with the current time so it's never blank.
             let fmt = cfg.formats.first().map_or("%H:%M", |s| s.as_str());
-            let tz = cfg.timezones.first().copied();
+            let tz = cfg.timezones.first();
             let initial = libabar::modules::clock::current_label(fmt, tz);
             set_segment_label(_layout, "clock", &initial);
 
@@ -218,10 +218,17 @@ fn build_module_configs(
                     on_scroll_down: e.on_scroll_down.clone(),
                 })
                 .unwrap_or_default();
+            use crate::config::AppIconTheme as Cfg;
+            use libabar::modules::tray::AppIconTheme;
             TrayConfig {
                 exec: t.exec.clone(),
                 feed_id: t.feed_id,
                 events,
+                app_icon_theme: match t.app_icon_theme {
+                    Cfg::Fallback => AppIconTheme::Fallback,
+                    Cfg::Prefer => AppIconTheme::Prefer,
+                    Cfg::Never => AppIconTheme::Never,
+                },
             }
         })
     };
