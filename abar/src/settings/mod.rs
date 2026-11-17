@@ -136,7 +136,7 @@ fn build_module_configs(
 
             // Prime the clock segment with the current time so it's never blank.
             let fmt = cfg.formats.first().map_or("%H:%M", |s| s.as_str());
-            let tz = cfg.timezones.first().copied();
+            let tz = cfg.timezones.first();
             let initial = libabar::modules::clock::current_label(fmt, tz);
             set_segment_label(_layout, "clock", &initial);
 

@@ -143,6 +143,9 @@ the bar once a minute; formats with seconds once a second.
   `wp_fractional_scale_v1`) is not covered by the tests, as sway always
   offers that protocol.
 - ~~**Tooltips**~~: done (4d42afe).
+- **After the audit**: RustSec marked `chrono` and `chrono-tz` unmaintained
+  (RUSTSEC-2026-0543/0555), failing `cargo deny`. The clock now uses `jiff`,
+  which also stops an unknown format directive from crashing abar.
 - **CI**: the full `cargo deny check` job was not run on GitHub here; watch
   its first run.
 - ~~**Event loop coverage**~~: done (4926af0). The CI job installs sway and

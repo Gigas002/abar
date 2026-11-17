@@ -34,6 +34,13 @@
 - Logs go to stderr, coloured only when it is a terminal.
 - Submenus are `xdg_popup`s of the bar: they close on any click outside them
   and hold keyboard focus only while open.
+- The clock uses `jiff` instead of `chrono` and `chrono-tz`, both now
+  unmaintained (RUSTSEC-2026-0543, RUSTSEC-2026-0555). Timezones come from
+  the system's tz database (`/usr/share/zoneinfo`, kept current by the
+  distribution) instead of a copy compiled into abar; formats render as
+  before. libabar: `ClockConfig::timezones` holds `jiff::tz::TimeZone`s and
+  `current_label` takes `Option<&TimeZone>`. Builds without the `clock`
+  feature no longer pull in a date library.
 - libabar: `paint_computed` and `paint_submenu` take the scale to draw at;
   `Segment`, `PlacedSegment`, `ScriptLine`, `ModuleUpdate`, `TrayConfig`
   and `MinimalTrayItem` gain fields (tooltips, `app_icon_theme`,
@@ -66,6 +73,8 @@
   not handle `SIGTERM`.
 - The restart delay for scripts never went back down after reaching 30 s.
 - A newline in a title made the bar two lines tall.
+- A clock format with an unknown directive (e.g. `%J`) crashed abar; it is
+  now shown as written, with a warning.
 - The clock showed frozen seconds with `%S`, could stay on the
   pre-suspend time for up to a minute, and only ever used its first format.
 - abar quit with "Resource temporarily unavailable" when a Wayland read

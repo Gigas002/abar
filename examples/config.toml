@@ -102,6 +102,8 @@ on_scroll_up = "playerctl volume 0.05+"
 on_scroll_down = "playerctl volume 0.05-"
 
 [clock]
+# strftime-style formats (https://docs.rs/jiff/latest/jiff/fmt/strtime/);
+# right click cycles through them. An invalid format is shown as written.
 formats = [
     # 21:35 28.03.2026
     "%R %Z %d.%m.%Y",

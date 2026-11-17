@@ -10,7 +10,7 @@ description = "Wayland layer-shell bar runtime."
 
 [features]
 default = []
-clock = ["dep:chrono-tz"]
+clock = ["dep:jiff"]
 keyboard = []
 tray = []
 workspaces = []
@@ -19,8 +19,7 @@ mpris = []
 svg = ["dep:resvg"]
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-chrono-tz = { version = "0.10", optional = true }
+jiff = { version = "1", optional = true }
 rustix = { version = "1", features = ["event", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
