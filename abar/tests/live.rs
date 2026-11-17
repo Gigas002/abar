@@ -441,10 +441,24 @@ mod hidpi {
         if Sway::start().is_none() {
             return;
         }
-        let (sway, abar) = scaled("2");
-        assert_eq!(abar.bar_height(), 45, "the height stays logical");
+        // The height depends on the font, so take it at scale 1 first.
+        let sway = Sway::start().expect("checked above");
+        let mut abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
+        bar_islands(&sway);
+        let logical = abar.bar_height();
+        sway.msg(&[
+            "output",
+            "HEADLESS-1",
+            "scale",
+            "2",
+            "scale_filter",
+            "nearest",
+        ]);
+        abar.wait_for_log("repaint at scale 2", "scale=2.0");
+        bar_islands(&sway);
+        assert_eq!(abar.bar_height(), logical, "the height stays logical");
         let img = probe_text(&sway, &abar);
-        assert_eq!(img.height, 90, "a 45 px bar is 90 physical px");
+        assert_eq!(img.height, 2 * logical, "twice as many physical rows");
         let mixed = (0..img.height / 2)
             .flat_map(|by| (0..img.width / 2).map(move |bx| (bx * 2, by * 2)))
             .filter(|&(x, y)| {
