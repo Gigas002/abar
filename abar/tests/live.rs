@@ -267,10 +267,11 @@ fn a_new_output_gets_a_bar_and_an_unplugged_one_loses_it() {
     let sway = sway_or_skip!();
     let mut abar = Abar::start(&sway, &(probe_config("") + LAYOUT));
     bar_islands(&sway);
-    sway.msg(&["create_output"]);
+    // Its name is up to sway, so ask rather than assume HEADLESS-2.
+    let output = sway.create_output();
     sway.msg(&[
         "output",
-        "HEADLESS-2",
+        &output,
         "resolution",
         "640x480",
         "position",
@@ -281,7 +282,7 @@ fn a_new_output_gets_a_bar_and_an_unplugged_one_loses_it() {
         let img = sway.screenshot(1280, 0, 640, 60);
         (img.count(ISLAND_BG) > 0).then_some(())
     });
-    sway.msg(&["output", "HEADLESS-2", "unplug"]);
+    sway.msg(&["output", &output, "unplug"]);
     // sway closes the layer surface, then removes the output.
     abar.wait_for_log("second bar closed", "layer surface closed");
     assert!(abar.try_wait().is_none(), "abar keeps running");

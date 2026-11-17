@@ -148,21 +148,53 @@ impl Sway {
     }
 
     fn try_msg(&self, args: &[&str]) -> Option<String> {
+        self.msg_result(args).ok()
+    }
+
+    /// `swaymsg <args>`: its stdout, or what it and sway said on failure.
+    fn msg_result(&self, args: &[&str]) -> Result<String, String> {
         let out = Command::new("swaymsg")
             .arg("-s")
             .arg(&self.ipc)
             .args(args)
             .output()
-            .ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+            .map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        if out.status.success() {
+            Ok(stdout)
+        } else {
+            Err(format!(
+                "{}\n{stdout}{}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            ))
+        }
+    }
+
+    /// The names of sway's outputs, in sway's order.
+    pub fn outputs(&self) -> Vec<String> {
+        // -p: the readable form, which swaymsg only prints to a terminal by default.
+        self.msg(&["-p", "-t", "get_outputs"])
+            .lines()
+            .filter_map(|l| l.strip_prefix("Output "))
+            .filter_map(|l| l.split_whitespace().next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Create a headless output and return its name, which sway picks.
+    pub fn create_output(&self) -> String {
+        let before = self.outputs();
+        self.msg(&["create_output"]);
+        wait_for("the new output", || {
+            self.outputs().into_iter().find(|o| !before.contains(o))
+        })
     }
 
     /// Run a sway command (`swaymsg <args>`), panicking when it fails.
     pub fn msg(&self, args: &[&str]) -> String {
-        self.try_msg(args)
-            .unwrap_or_else(|| panic!("swaymsg {args:?} failed"))
+        self.msg_result(args)
+            .unwrap_or_else(|e| panic!("swaymsg {args:?} failed: {e}"))
     }
 
     /// A command line set up to talk to this compositor.
