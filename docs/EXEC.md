@@ -140,6 +140,15 @@ sh -c "~/.config/abar/scripts/tray/tray-menu.sh 'nm-applet'"
 See `examples/scripts/tray/tray-menu.sh` for a `tofi`-based picker that uses
 this to call `trayctl menu --app-id <app_id>` directly.
 
+Since the id comes last, trayctl's item commands work as handlers as they
+are (trayd 0.3 or later):
+
+```toml
+on_middle_click = "trayctl secondary-activate --app-id"
+on_scroll_up = "trayctl scroll --delta 120 --app-id"
+on_scroll_down = "trayctl scroll --delta -120 --app-id"
+```
+
 ### `app_icon_theme`
 
 Some apps ship their own icons and name the directory in `icon_theme_path`.

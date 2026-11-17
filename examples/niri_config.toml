@@ -72,3 +72,9 @@ on_left_click = "$TERMINAL -e calendar-tui"
 exec = "~/.config/abar/scripts/tray/tray.sh"
 feed_id = true
 on_left_click = "~/.config/abar/scripts/tray/niri_menu.sh"
+# Middle click and the wheel go to the app (trayctl gets the app_id from feed_id).
+# Wheel up is a positive delta, as in KDE; apps that read it the other way
+# need the signs swapped.
+on_middle_click = "trayctl secondary-activate --app-id"
+on_scroll_up = "trayctl scroll --delta 120 --app-id"
+on_scroll_down = "trayctl scroll --delta -120 --app-id"
